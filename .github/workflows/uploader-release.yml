@@ -33,7 +33,8 @@ jobs:
             cargo build --locked --release --target ${{ matrix.target }}
             cp target/${{ matrix.target }}/release/guild-uploader.exe "../dist/guild-uploader-$V-windows.exe"
           fi
-          cd ../dist && for f in *; do shasum -a 256 "$f" > "$f.sha256"; done
+          # Windows runners have sha256sum but no shasum; macOS has shasum. Same "<hash>  <name>" line either way.
+          cd ../dist && for f in *; do if command -v sha256sum >/dev/null; then sha256sum "$f"; else shasum -a 256 "$f"; fi | sed 's/ \*/  /' > "$f.sha256"; done
       # Signing: SignPath Foundation (free for open source) once approved; until then the builds are unsigned (SPEC §18c).
       - uses: actions/attest-build-provenance@v2
         with: { subject-path: "dist/guild-uploader-*" }
@@ -45,6 +46,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with: { path: dist, merge-multiple: true }
+      - name: SHA256SUMS
+        run: cd dist && cat *.sha256 > SHA256SUMS && cat SHA256SUMS
       - env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Uploader ${GITHUB_REF_NAME#uploader-v}" --notes "Unsigned for now. SHA-256 files are attached. Verify provenance with: gh attestation verify <file> --repo $GITHUB_REPOSITORY"
