@@ -111,6 +111,12 @@ function fillSetup(snap) {
   $("game-folder").value = snap.prefs.gameFolder || "";
   $("start-login").checked = !!snap.prefs.startAtLogin;
   $("token-saved").hidden = !snap.hasToken;
+  const hint = $("token-hint");
+  if (hint) {
+    hint.textContent = snap.hasToken
+      ? "Stored in the OS credential store, never in a file."
+      : "Paste a token from the site (Settings → Uploader tokens). Stored in the OS credential store, never in a file.";
+  }
   const box = $("candidates");
   box.innerHTML = "";
   if (snap.candidates?.length) {
@@ -146,10 +152,12 @@ function setAddonUi(state, check) {
   $("addon-state").hidden = true;
   $("addon-err").hidden = true;
   $("addon-actions").hidden = false;
-  $("btn-check").disabled = state === "updating";
-  $("btn-addon-update").disabled = state === "updating";
-  $("btn-addon-later").disabled = state === "updating";
-  $("btn-addon-skip").disabled = state === "updating";
+  const busy = state === "updating";
+  $("btn-check").disabled = busy;
+  $("btn-upload").disabled = busy;
+  $("btn-addon-update").disabled = busy;
+  $("btn-addon-later").disabled = busy;
+  $("btn-addon-skip").disabled = busy;
 
   if (c) {
     $("addon-installed").textContent = c.installed || "not installed";
@@ -262,7 +270,7 @@ $("btn-upload").addEventListener("click", async () => {
   } catch (e) {
     showErr("upload-err", "upload-err-msg", e);
   } finally {
-    $("btn-upload").disabled = false;
+    if (addonUiState !== "updating") $("btn-upload").disabled = false;
   }
 });
 
@@ -420,11 +428,6 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
     event: { listen: async () => () => {} },
     dialog: { open: async () => null },
   };
-
-  const theme = q.get("theme");
-  if (theme === "dark" || theme === "light") {
-    document.documentElement.setAttribute("data-theme", theme);
-  }
 
   const screen = q.get("screen") || "setup";
   const addon = q.get("addon") || "available";

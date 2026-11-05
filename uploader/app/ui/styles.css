@@ -1,49 +1,10 @@
 /*
-  Theme: OS prefers-color-scheme by default.
-  Override with html[data-theme="dark"|"light"] (preview ?theme= / future Retik lock).
+  Dark only (Retik / OQ #64). No light theme, no prefers-color-scheme switch.
   Accent #D0081A is fill-only — never body text.
+  Font: intentional OS chrome — no site display face in the binary.
 */
 :root {
-  --bg: #f4f1ea;
-  --fg: #1a1510;
-  --muted: #6b6258;
-  --card: #fffdf8;
-  --line: #d9d0c3;
-  --accent: #D0081A;
-  --accent-fg: #fff8f0;
-  --ok: #1f6b3a;
-  --warn: #8a5a00;
-  --radius: 10px;
-  --pad: 16px;
-  /* Intentional OS chrome — no site display face in the binary */
-  font-family: system-ui, -apple-system, sans-serif;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #14110e;
-    --fg: #f2ebe0;
-    --muted: #a89c8c;
-    --card: #1e1914;
-    --line: #3a3228;
-    --accent: #D0081A;
-    --accent-fg: #fff8f0;
-    --ok: #6dca8a;
-    --warn: #f0c060;
-  }
-}
-html[data-theme="light"] {
-  --bg: #f4f1ea;
-  --fg: #1a1510;
-  --muted: #6b6258;
-  --card: #fffdf8;
-  --line: #d9d0c3;
-  --accent: #D0081A;
-  --accent-fg: #fff8f0;
-  --ok: #1f6b3a;
-  --warn: #8a5a00;
-  color-scheme: light;
-}
-html[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #14110e;
   --fg: #f2ebe0;
   --muted: #a89c8c;
@@ -53,12 +14,14 @@ html[data-theme="dark"] {
   --accent-fg: #fff8f0;
   --ok: #6dca8a;
   --warn: #f0c060;
-  color-scheme: dark;
+  --radius: 10px;
+  --pad: 16px;
+  font-family: system-ui, -apple-system, sans-serif;
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 
-html, body { margin: 0; background: var(--bg); color: var(--fg); min-height: 100%; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
 body { padding: var(--pad); }
 #app { max-width: 420px; margin: 0 auto; }
 .top h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: 0.01em; }
@@ -79,7 +42,6 @@ input.is-error { border-color: var(--accent); border-width: 2px; }
 .row input { margin-top: 0; flex: 1; }
 .hint { margin: -6px 0 12px; font-size: 12px; color: var(--muted); line-height: 1.35; }
 .token-saved { margin: -6px 0 12px; font-size: 12px; color: var(--muted); line-height: 1.35; }
-.token-saved[hidden] { display: none; }
 .candidates { margin: -4px 0 12px; display: flex; flex-direction: column; gap: 6px; }
 .candidates button {
   text-align: left; font-size: 12px; padding: 8px 10px; border-radius: 8px;
@@ -99,18 +61,14 @@ button.secondary { background: transparent; color: var(--fg); border-color: var(
 .status dd { margin: 0; word-break: break-word; }
 .detail { margin: 0 0 12px; font-size: 14px; color: var(--fg); line-height: 1.4; }
 .detail .lbl { color: var(--muted); display: block; }
-.detail[hidden] { display: none; }
 .note { margin: 0 0 12px; font-size: 14px; color: var(--muted); line-height: 1.35; }
 .note.ok { color: var(--ok); }
-.note[hidden] { display: none; }
 .warn { margin: 0 0 12px; font-size: 14px; color: var(--warn); line-height: 1.35; }
-.warn[hidden] { display: none; }
 .err {
   display: flex; gap: 10px; align-items: flex-start;
   margin: 0 0 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--bg); color: var(--fg); font-size: 14px; line-height: 1.4;
 }
-.err[hidden] { display: none; }
 .err i {
   flex: none; width: 14px; height: 14px; margin-top: 3px;
   background: var(--accent); clip-path: polygon(50% 0, 100% 100%, 0 100%);
@@ -120,6 +78,5 @@ button.secondary { background: transparent; color: var(--fg); border-color: var(
   margin: 0 0 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--bg); font-size: 14px; line-height: 1.4;
 }
-.banner[hidden] { display: none; }
 .banner strong { display: block; margin-bottom: 4px; }
 .banner .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
