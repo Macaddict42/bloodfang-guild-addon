@@ -35,6 +35,9 @@ jobs:
         run: cargo test -p guild-uploader-core --locked
       - name: Install tauri-cli
         run: cargo install tauri-cli --version "^2.0.0" --locked
+      - name: Generate platform icons from PNG
+        working-directory: uploader/app/src-tauri
+        run: cargo tauri icon icons/icon.png
       - name: Build desktop app (unsigned)
         working-directory: uploader/app/src-tauri
         env:
