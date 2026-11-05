@@ -57,23 +57,25 @@ jobs:
           V="${GITHUB_REF_NAME#uploader-app-v}"
           if [[ "${GITHUB_REF_TYPE:-}" != "tag" ]]; then V="0.1.0-ci.${GITHUB_RUN_NUMBER}"; fi
           # Workspace target dir is uploader/target (not app/src-tauri/target).
+          # Avoid mapfile (missing on macOS system bash 3).
           ROOT=uploader/target
           find "$ROOT" -type d -name bundle || true
-          mapfile -t files < <(find "$ROOT" -path '*/release/bundle/*' -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.msi' \) ! -name '*unst*' 2>/dev/null || true)
-          if [ ${#files[@]} -eq 0 ]; then
+          n=0
+          while IFS= read -r -d '' f; do
+            base=$(basename "$f")
+            safe=$(echo "$base" | tr ' ' '_')
+            cp "$f" "dist/guild-uploader-app-$V-${{ matrix.platform }}-$safe"
+            n=$((n+1))
+          done < <(find "$ROOT" -path '*/release/bundle/*' -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.msi' \) ! -name '*unst*' -print0 2>/dev/null)
+          if [ "$n" -eq 0 ]; then
             echo "No bundle artifacts found under $ROOT" >&2
             find "$ROOT" -path '*/release/bundle/*' -type f | head -80 >&2 || true
             exit 1
           fi
-          for f in "${files[@]}"; do
-            base=$(basename "$f")
-            # Replace spaces for safer artifact names
-            safe=${base// /_}
-            cp "$f" "dist/guild-uploader-app-$V-${{ matrix.platform }}-$safe"
-          done
           cd dist
           for f in *; do
             [ -f "$f" ] || continue
+            case "$f" in *.sha256) continue ;; esac
             if command -v sha256sum >/dev/null; then sha256sum "$f"; else shasum -a 256 "$f"; fi | sed 's/ \*/  /' > "$f.sha256"
           done
           ls -la
