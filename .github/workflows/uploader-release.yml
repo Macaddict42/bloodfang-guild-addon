@@ -17,20 +17,20 @@ jobs:
     defaults: { run: { shell: bash, working-directory: uploader } }
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85.1
+      - uses: dtolnay/rust-toolchain@1.90.0
         with: { targets: "${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}" }
-      - run: cargo test --locked
+      - run: cargo test -p guild-uploader-core --locked
       - name: Build (reproducible flags)
         run: |
           export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
           export RUSTFLAGS="--remap-path-prefix=$PWD=. --remap-path-prefix=$HOME=~"
           V="${GITHUB_REF_NAME#uploader-v}"; mkdir -p ../dist
           if [ "${{ matrix.target }}" = universal-apple-darwin ]; then
-            cargo build --locked --release --target aarch64-apple-darwin
-            cargo build --locked --release --target x86_64-apple-darwin
+            cargo build -p guild-uploader-core --locked --release --target aarch64-apple-darwin
+            cargo build -p guild-uploader-core --locked --release --target x86_64-apple-darwin
             lipo -create -output "../dist/guild-uploader-$V-macos" target/aarch64-apple-darwin/release/guild-uploader target/x86_64-apple-darwin/release/guild-uploader
           else
-            cargo build --locked --release --target ${{ matrix.target }}
+            cargo build -p guild-uploader-core --locked --release --target ${{ matrix.target }}
             cp target/${{ matrix.target }}/release/guild-uploader.exe "../dist/guild-uploader-$V-windows.exe"
           fi
           # Windows runners have sha256sum but no shasum; macOS has shasum. Same "<hash>  <name>" line either way.

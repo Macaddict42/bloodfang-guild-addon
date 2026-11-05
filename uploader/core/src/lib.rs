@@ -1,12 +1,17 @@
 //! Uploader core (SPEC §19). Files only: reads `WTF/Account/*/SavedVariables/<addon>.lua` and posts the
 //! signed export strings it finds to the site's `/api/uploader/ingest`. It never reads, writes or talks to
 //! the game process, and it never edits SavedVariables.
+pub mod detect;
+pub mod update;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+pub use detect::{candidates, looks_like_game_dir};
+pub use update::{latest_addon, latest_app, install_addon, installed_version, addons_dir, game_seems_running, AddonRelease, UpdateError};
 
 /// Types the site's uploader endpoint accepts.
 pub const TYPES: &[&str] = &["gbank", "recipes"];

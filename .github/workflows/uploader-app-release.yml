@@ -1,0 +1,101 @@
+name: uploader-app
+on:
+  push:
+    tags: ["uploader-app-v*"]
+  workflow_dispatch:
+    inputs:
+      make_draft:
+        description: "Also create a draft prerelease (delete afterwards for smoke builds)"
+        type: boolean
+        default: false
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2022, platform: windows, bundles: nsis, target: x86_64-pc-windows-msvc }
+          - { os: macos-14, platform: macos, bundles: dmg, target: aarch64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    defaults: { run: { shell: bash } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: uploader -> target
+      - name: Core tests
+        working-directory: uploader
+        run: cargo test -p guild-uploader-core --locked
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2.0.0" --locked
+      - name: Build desktop app (unsigned)
+        working-directory: uploader/app/src-tauri
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+          ADDON_NAME: ${{ vars.ADDON_NAME }}
+          GITHUB_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export SITE_URL="${SITE_URL:-}"
+          export ADDON_NAME="${ADDON_NAME:-}"
+          export GITHUB_REPO="${GITHUB_REPO:-$GITHUB_REPOSITORY}"
+          cargo tauri build --bundles "${{ matrix.bundles }}" --target "${{ matrix.target }}"
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          V="${GITHUB_REF_NAME#uploader-app-v}"
+          if [[ "${GITHUB_REF_TYPE:-}" != "tag" ]]; then V="0.1.0-ci.${GITHUB_RUN_NUMBER}"; fi
+          find uploader/app/src-tauri/target -type d -name bundle
+          mapfile -t files < <(find uploader/app/src-tauri/target -path '*/release/bundle/*' -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.msi' \) ! -name '*unst*' 2>/dev/null || true)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No bundle artifacts found" >&2
+            find uploader/app/src-tauri/target -path '*/release/bundle/*' -type f | head -50 >&2 || true
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            base=$(basename "$f")
+            cp "$f" "dist/guild-uploader-app-$V-${{ matrix.platform }}-$base"
+          done
+          cd dist
+          for f in *; do
+            [ -f "$f" ] || continue
+            if command -v sha256sum >/dev/null; then sha256sum "$f"; else shasum -a 256 "$f"; fi | sed 's/ \*/  /' > "$f.sha256"
+          done
+          ls -la
+      # Signing: SignPath later; unsigned for now (SPEC §18c).
+      - uses: actions/attest-build-provenance@v2
+        with: { subject-path: "dist/*" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/uploader-app-v') || inputs.make_draft
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - name: SHA256SUMS
+        run: cd dist && cat *.sha256 > SHA256SUMS && cat SHA256SUMS
+      - name: Publish (tag or draft)
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          set -euo pipefail
+          NOTES="Unsigned for now. Verify SHA256SUMS and provenance: gh attestation verify <file> --repo $GITHUB_REPOSITORY"
+          if [[ "$GITHUB_REF" == refs/tags/uploader-app-v* ]]; then
+            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Uploader app ${GITHUB_REF_NAME#uploader-app-v}" --notes "$NOTES"
+          else
+            TAG="uploader-app-ci-${GITHUB_RUN_NUMBER}"
+            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "Uploader app CI draft ${GITHUB_RUN_NUMBER}" --notes "$NOTES" --draft --prerelease
+          fi

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Guild Uploader</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="top">
+      <h1>Guild Uploader</h1>
+      <p class="sub">Reads SavedVariables only. Never touches the game process.</p>
+    </header>
+
+    <section id="screen-setup" class="screen hidden" aria-label="Setup">
+      <h2>Setup</h2>
+      <label>Site URL
+        <input id="site-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://example.com" />
+      </label>
+      <label>Uploader token
+        <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="upl_…" />
+      </label>
+      <p class="hint">Paste a token from the site (Settings → Uploader tokens). Stored in the OS credential store, never in a file.</p>
+      <label>Game folder
+        <div class="row">
+          <input id="game-folder" type="text" autocomplete="off" spellcheck="false" placeholder="…/World of Warcraft/_classic_era_" />
+          <button type="button" id="btn-browse" class="secondary">Browse</button>
+        </div>
+      </label>
+      <div id="candidates" class="candidates" hidden></div>
+      <label class="check"><input id="start-login" type="checkbox" /> Start at login</label>
+      <p id="setup-err" class="err" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" id="btn-save" class="primary">Save and continue</button>
+      </div>
+    </section>
+
+    <section id="screen-main" class="screen hidden" aria-label="Status">
+      <h2>Upload</h2>
+      <dl class="status">
+        <div><dt>Last upload</dt><dd id="last-upload">—</dd></div>
+        <div><dt>Status</dt><dd id="last-status">—</dd></div>
+        <div><dt>Addon</dt><dd id="addon-ver">—</dd></div>
+      </dl>
+      <p id="upload-err" class="err" role="alert" hidden></p>
+      <p id="upload-ok" class="ok" hidden></p>
+      <div class="actions">
+        <button type="button" id="btn-upload" class="primary">Upload now</button>
+        <button type="button" id="btn-setup" class="secondary">Setup</button>
+      </div>
+
+      <h2 class="mt">Addon update</h2>
+      <dl class="status">
+        <div><dt>Installed</dt><dd id="addon-installed">—</dd></div>
+        <div><dt>Latest</dt><dd id="addon-latest">—</dd></div>
+      </dl>
+      <p id="addon-warn" class="warn" hidden>Game looks running — changes take effect after /reload.</p>
+      <p id="addon-err" class="err" role="alert" hidden></p>
+      <p id="addon-ok" class="ok" hidden></p>
+      <div class="actions">
+        <button type="button" id="btn-check" class="secondary">Check for update</button>
+        <button type="button" id="btn-update" class="primary" disabled>Install update</button>
+      </div>
+    </section>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
