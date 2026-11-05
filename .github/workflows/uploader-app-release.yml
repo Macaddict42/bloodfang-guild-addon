@@ -19,14 +19,14 @@ jobs:
       matrix:
         include:
           - { os: windows-2022, platform: windows, bundles: nsis, target: x86_64-pc-windows-msvc }
-          - { os: macos-14, platform: macos, bundles: dmg, target: aarch64-apple-darwin }
+          - { os: macos-14, platform: macos, bundles: dmg, target: universal-apple-darwin }
     runs-on: ${{ matrix.os }}
     defaults: { run: { shell: bash } }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.90.0
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: uploader -> target

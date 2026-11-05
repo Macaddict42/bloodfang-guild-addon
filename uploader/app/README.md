@@ -27,3 +27,6 @@ cd app/src-tauri && cargo tauri dev
 Tag `uploader-app-vX.Y.Z` (or `workflow_dispatch` for a draft). Builds unsigned
 NSIS (Windows) and DMG (macOS) plus SHA256SUMS and provenance attestations.
 SignPath comes later.
+
+## Releases
+CI tag `uploader-app-vX.Y.Z` builds an unsigned Windows NSIS installer and a **universal** macOS `.dmg` (SPEC §18b). Do not publish without Retik.
