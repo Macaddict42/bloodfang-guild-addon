@@ -28,4 +28,5 @@ jobs:
         with: { subject-path: "dist/*.zip" }
       - name: Release
         env: { GH_TOKEN: "${{ github.token }}" }
-        run: gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.sha256 --title "Addon ${GITHUB_REF_NAME#addon-v}" --notes "SHA-256 is in the .sha256 file. Verify provenance with: gh attestation verify <zip> --repo ${{ github.repository }}"
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.sha256 --title "Addon ${GITHUB_REF_NAME#addon-v}" --notes "SHA-256 is in the .sha256 file. Verify provenance with: gh attestation verify <zip> --repo ${{ github.repository }}"

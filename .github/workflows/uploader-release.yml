@@ -46,4 +46,5 @@ jobs:
       - uses: actions/download-artifact@v4
         with: { path: dist, merge-multiple: true }
       - env: { GH_TOKEN: "${{ github.token }}" }
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Uploader ${GITHUB_REF_NAME#uploader-v}" --notes "Unsigned for now. SHA-256 files are attached. Verify provenance with: gh attestation verify <file> --repo $GITHUB_REPOSITORY"
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Uploader ${GITHUB_REF_NAME#uploader-v}" --notes "Unsigned for now. SHA-256 files are attached. Verify provenance with: gh attestation verify <file> --repo $GITHUB_REPOSITORY"
