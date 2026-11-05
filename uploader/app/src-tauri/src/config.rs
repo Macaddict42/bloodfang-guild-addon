@@ -15,7 +15,13 @@ pub struct Prefs {
     pub start_at_login: bool,
     pub last_upload_at: Option<String>,
     pub last_status: Option<String>,
+    /// Plain outcome lines from the last upload (e.g. "gbank accepted"), for UI "what was sent".
+    #[serde(default)]
+    pub last_sent_lines: Option<Vec<String>>,
     pub last_addon_version: Option<String>,
+    /// Latest addon version the user chose Skip this version for (SPEC §18b).
+    #[serde(default)]
+    pub skipped_addon_version: Option<String>,
     pub setup_done: bool,
 }
 
@@ -27,7 +33,7 @@ pub fn load_prefs() -> Prefs {
     let p = prefs_path();
     fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| Prefs {
         site_url: option_env!("SITE_URL").unwrap_or("").to_string(),
-        addon_name: option_env!("ADDON_NAME").unwrap_or("").to_string(), 
+        addon_name: option_env!("ADDON_NAME").unwrap_or("").to_string(),
         ..Prefs::default()
     })
 }

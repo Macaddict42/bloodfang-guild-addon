@@ -21,6 +21,7 @@
       <label>Uploader token
         <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="upl_…" />
       </label>
+      <p id="token-saved" class="token-saved" hidden>Token saved. Paste a new one only to replace it.</p>
       <p class="hint">Paste a token from the site (Settings → Uploader tokens). Stored in the OS credential store, never in a file.</p>
       <label>Game folder
         <div class="row">
@@ -30,7 +31,13 @@
       </label>
       <div id="candidates" class="candidates" hidden></div>
       <label class="check"><input id="start-login" type="checkbox" /> Start at login</label>
-      <p id="setup-err" class="err" role="alert" hidden></p>
+      <div id="setup-err" class="err" role="alert" hidden>
+        <i aria-hidden="true"></i>
+        <div>
+          <strong>Couldn't save</strong>
+          <span id="setup-err-msg"></span>
+        </div>
+      </div>
       <div class="actions">
         <button type="button" id="btn-save" class="primary">Save and continue</button>
       </div>
@@ -39,12 +46,19 @@
     <section id="screen-main" class="screen hidden" aria-label="Status">
       <h2>Upload</h2>
       <dl class="status">
-        <div><dt>Last upload</dt><dd id="last-upload">—</dd></div>
-        <div><dt>Status</dt><dd id="last-status">—</dd></div>
+        <div><dt>Last upload</dt><dd id="last-upload">Never</dd></div>
+        <div><dt>Status</dt><dd id="last-status">Waiting for SavedVariables</dd></div>
         <div><dt>Addon</dt><dd id="addon-ver">—</dd></div>
       </dl>
-      <p id="upload-err" class="err" role="alert" hidden></p>
-      <p id="upload-ok" class="ok" hidden></p>
+      <p id="what-sent" class="detail" hidden><span class="lbl">What was sent</span><span id="what-sent-body"></span></p>
+      <div id="upload-err" class="err" role="alert" hidden>
+        <i aria-hidden="true"></i>
+        <div>
+          <strong>Upload failed</strong>
+          <span id="upload-err-msg"></span>
+        </div>
+      </div>
+      <p id="upload-ok" class="note ok" hidden></p>
       <div class="actions">
         <button type="button" id="btn-upload" class="primary">Upload now</button>
         <button type="button" id="btn-setup" class="secondary">Setup</button>
@@ -56,11 +70,25 @@
         <div><dt>Latest</dt><dd id="addon-latest">—</dd></div>
       </dl>
       <p id="addon-warn" class="warn" hidden>Game looks running — changes take effect after /reload.</p>
-      <p id="addon-err" class="err" role="alert" hidden></p>
-      <p id="addon-ok" class="ok" hidden></p>
-      <div class="actions">
+      <p id="addon-state" class="note" hidden></p>
+      <div id="addon-banner" class="banner" role="region" aria-label="Update available" hidden>
+        <strong>Update available</strong>
+        <span id="addon-banner-body"></span>
+        <div class="row">
+          <button type="button" id="btn-addon-update" class="primary">Update</button>
+          <button type="button" id="btn-addon-later" class="secondary">Later</button>
+          <button type="button" id="btn-addon-skip" class="secondary">Skip this version</button>
+        </div>
+      </div>
+      <div id="addon-err" class="err" role="alert" hidden>
+        <i aria-hidden="true"></i>
+        <div>
+          <strong>Update failed</strong>
+          <span id="addon-err-msg"></span>
+        </div>
+      </div>
+      <div id="addon-actions" class="actions">
         <button type="button" id="btn-check" class="secondary">Check for update</button>
-        <button type="button" id="btn-update" class="primary" disabled>Install update</button>
       </div>
     </section>
   </div>

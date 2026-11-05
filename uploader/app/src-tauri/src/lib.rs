@@ -77,14 +77,14 @@ struct SetupInput {
 #[tauri::command]
 fn save_setup(state: State<AppState>, input: SetupInput, app: AppHandle) -> Result<Snapshot, String> {
     if input.token.is_empty() && config::get_token()?.is_none() {
-        return Err("paste an uploader token from the site (Settings → Uploader tokens)".into());
+        return Err("Paste an uploader token from the site (Settings → Uploader tokens).".into());
     }
     let game = PathBuf::from(input.game_folder.trim());
     if !core::looks_like_game_dir(&game) {
-        return Err("that folder doesn't look like a game client (need WTF or Interface/AddOns)".into());
+        return Err("That folder doesn't look like a game client (need WTF or Interface/AddOns).".into());
     }
     if !input.token.is_empty() {
-        if !input.token.starts_with("upl_") { return Err("token should start with upl_".into()); }
+        if !input.token.starts_with("upl_") { return Err("Token should start with upl_.".into()); }
         config::set_token(input.token.trim())?;
     }
     let mut prefs = state.prefs.lock().map_err(|e| e.to_string())?;
@@ -120,11 +120,11 @@ struct UploadResult {
 }
 
 fn do_upload(prefs: &config::Prefs) -> Result<UploadResult, String> {
-    let token = config::get_token()?.ok_or("no uploader token stored — open Setup")?;
+    let token = config::get_token()?.ok_or("No uploader token stored — open Setup.")?;
     let game = PathBuf::from(&prefs.game_folder);
     let files = core::saved_variables(&game, &prefs.addon_name);
     if files.is_empty() {
-        return Err(format!("no SavedVariables for {} yet — log in with the addon, then /reload", prefs.addon_name));
+        return Err(format!("No SavedVariables for {} yet — log in with the addon, then /reload.", prefs.addon_name));
     }
     let state_path = config::state_path(prefs);
     let report = core::run(&files, &prefs.site_url, &token, &state_path).map_err(|e| e.to_string())?;
@@ -149,6 +149,7 @@ fn upload_now(state: State<AppState>) -> Result<UploadResult, String> {
     let r = do_upload(&prefs)?;
     prefs.last_upload_at = Some(r.at.clone());
     prefs.last_status = Some(r.status.clone());
+    prefs.last_sent_lines = Some(r.lines.clone());
     config::save_prefs(&prefs)?;
     Ok(r)
 }
@@ -175,11 +176,18 @@ fn check_addon(state: State<AppState>) -> Result<AddonCheck, String> {
         Some(r) => (Some(r.tag.clone()), Some(r.version.to_string())),
         None => (None, None),
     };
-    let update_available = match (&installed, &latest) {
+    let mut update_available = match (&installed, &latest) {
         (Some(i), Some(r)) => semver_gt(&r.version.to_string(), i),
         (None, Some(_)) => true,
         _ => false,
     };
+    if update_available {
+        if let (Some(skip), Some(v)) = (&prefs.skipped_addon_version, &ver) {
+            if skip == v {
+                update_available = false;
+            }
+        }
+    }
     Ok(AddonCheck { installed, latest: ver, tag, update_available, game_running: core::game_seems_running() })
 }
 
@@ -199,8 +207,21 @@ fn update_addon(state: State<AppState>) -> Result<String, String> {
     let ver = core::install_addon(&rel, PathBuf::from(&prefs.game_folder).as_path(), &prefs.addon_name, Some(&d.github_repo))
         .map_err(|e| e.to_string())?;
     prefs.last_addon_version = Some(ver.clone());
+    prefs.skipped_addon_version = None;
     config::save_prefs(&prefs)?;
     Ok(ver)
+}
+
+
+#[tauri::command]
+fn skip_addon_version(state: State<AppState>, version: String) -> Result<(), String> {
+    let mut prefs = state.prefs.lock().map_err(|e| e.to_string())?;
+    let v = version.trim();
+    if v.is_empty() {
+        return Err("No version to skip.".into());
+    }
+    prefs.skipped_addon_version = Some(v.to_string());
+    config::save_prefs(&prefs)
 }
 
 #[tauri::command]
@@ -285,7 +306,7 @@ pub fn run() {
         }))
         .manage(AppState { prefs: Mutex::new(prefs), watching: Mutex::new(false) })
         .invoke_handler(tauri::generate_handler![
-            get_snapshot, save_setup, clear_token, upload_now, check_addon, update_addon, start_watch, check_self_update, pick_folder
+            get_snapshot, save_setup, clear_token, upload_now, check_addon, update_addon, skip_addon_version, start_watch, check_self_update, pick_folder
         ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Open", true, None::<&str>)?;
