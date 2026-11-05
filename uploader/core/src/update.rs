@@ -194,10 +194,25 @@ pub fn latest_app(repo: &str) -> Result<Option<AddonRelease>, UpdateError> {
     let mut best: Option<AddonRelease> = None;
     for r in list {
         let Some(ver) = r.tag_name.strip_prefix("uploader-app-v").and_then(|v| Version::parse(v).ok()) else { continue };
-        let asset = r.assets.iter().find(|a| {
-            let n = a.name.to_ascii_lowercase();
-            n.ends_with(".exe") || n.ends_with(".dmg") || n.ends_with(".zip") || n.ends_with(".app.tar.gz")
-        });
+        let asset = {
+            let lower = |a: &GhAsset| a.name.to_ascii_lowercase();
+            #[cfg(target_os = "macos")]
+            let prefer = r.assets.iter().find(|a| {
+                let n = lower(a);
+                n.ends_with(".dmg") && (n.contains("universal") || n.contains("macos"))
+            }).or_else(|| r.assets.iter().find(|a| lower(a).ends_with(".dmg")));
+            #[cfg(target_os = "windows")]
+            let prefer = r.assets.iter().find(|a| {
+                let n = lower(a);
+                n.ends_with(".exe") && !n.contains("unst")
+            });
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            let prefer = r.assets.iter().find(|a| {
+                let n = lower(a);
+                n.ends_with(".dmg") || n.ends_with(".exe") || n.ends_with(".app.tar.gz")
+            });
+            prefer
+        };
         let Some(asset) = asset else { continue };
         let sums = r.assets.iter().find(|a| a.name == "SHA256SUMS").map(|a| a.browser_download_url.clone());
         let cand = AddonRelease {
