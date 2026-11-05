@@ -1,0 +1,12 @@
+## Interface: @INTERFACE@
+## Title: @ADDON_TITLE@
+## Notes: Guild bank, recipes and linking for the guild website.
+## Version: @VERSION@
+## SavedVariables: @ADDON_NAME@DB
+
+Libs\LibDeflate.lua
+Codec.lua
+Core.lua
+Comms.lua
+Bank.lua
+Recipes.lua

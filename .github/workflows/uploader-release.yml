@@ -1,0 +1,49 @@
+name: uploader release
+on:
+  push:
+    tags: ["uploader-v*"]
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { os: windows-2022, target: x86_64-pc-windows-msvc, ext: ".exe" }
+          - { os: macos-14, target: universal-apple-darwin, ext: "" }
+    runs-on: ${{ matrix.os }}
+    defaults: { run: { shell: bash, working-directory: uploader } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.1
+        with: { targets: "${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}" }
+      - run: cargo test --locked
+      - name: Build (reproducible flags)
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          export RUSTFLAGS="--remap-path-prefix=$PWD=. --remap-path-prefix=$HOME=~"
+          V="${GITHUB_REF_NAME#uploader-v}"; mkdir -p ../dist
+          if [ "${{ matrix.target }}" = universal-apple-darwin ]; then
+            cargo build --locked --release --target aarch64-apple-darwin
+            cargo build --locked --release --target x86_64-apple-darwin
+            lipo -create -output "../dist/guild-uploader-$V-macos" target/aarch64-apple-darwin/release/guild-uploader target/x86_64-apple-darwin/release/guild-uploader
+          else
+            cargo build --locked --release --target ${{ matrix.target }}
+            cp target/${{ matrix.target }}/release/guild-uploader.exe "../dist/guild-uploader-$V-windows.exe"
+          fi
+          cd ../dist && for f in *; do shasum -a 256 "$f" > "$f.sha256"; done
+      # Signing: SignPath Foundation (free for open source) once approved; until then the builds are unsigned (SPEC §18c).
+      - uses: actions/attest-build-provenance@v2
+        with: { subject-path: "dist/guild-uploader-*" }
+      - uses: actions/upload-artifact@v4
+        with: { name: "${{ matrix.target }}", path: dist/ }
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Uploader ${GITHUB_REF_NAME#uploader-v}" --notes "Unsigned for now. SHA-256 files are attached. Verify provenance with: gh attestation verify <file> --repo $GITHUB_REPOSITORY"
