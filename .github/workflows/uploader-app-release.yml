@@ -56,16 +56,20 @@ jobs:
           mkdir -p dist
           V="${GITHUB_REF_NAME#uploader-app-v}"
           if [[ "${GITHUB_REF_TYPE:-}" != "tag" ]]; then V="0.1.0-ci.${GITHUB_RUN_NUMBER}"; fi
-          find uploader/app/src-tauri/target -type d -name bundle
-          mapfile -t files < <(find uploader/app/src-tauri/target -path '*/release/bundle/*' -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.msi' \) ! -name '*unst*' 2>/dev/null || true)
+          # Workspace target dir is uploader/target (not app/src-tauri/target).
+          ROOT=uploader/target
+          find "$ROOT" -type d -name bundle || true
+          mapfile -t files < <(find "$ROOT" -path '*/release/bundle/*' -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.msi' \) ! -name '*unst*' 2>/dev/null || true)
           if [ ${#files[@]} -eq 0 ]; then
-            echo "No bundle artifacts found" >&2
-            find uploader/app/src-tauri/target -path '*/release/bundle/*' -type f | head -50 >&2 || true
+            echo "No bundle artifacts found under $ROOT" >&2
+            find "$ROOT" -path '*/release/bundle/*' -type f | head -80 >&2 || true
             exit 1
           fi
           for f in "${files[@]}"; do
             base=$(basename "$f")
-            cp "$f" "dist/guild-uploader-app-$V-${{ matrix.platform }}-$base"
+            # Replace spaces for safer artifact names
+            safe=${base// /_}
+            cp "$f" "dist/guild-uploader-app-$V-${{ matrix.platform }}-$safe"
           done
           cd dist
           for f in *; do
