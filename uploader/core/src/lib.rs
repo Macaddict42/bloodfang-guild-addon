@@ -74,6 +74,21 @@ impl std::fmt::Display for UploadError {
 /// A string is finished when the site accepted it or already had it.
 pub fn done(o: &Outcome) -> bool { o.ok || o.error.as_deref() == Some("duplicate") }
 
+/// Drop an `upl_` secret if a site error body echoes one. The UI shows this string.
+fn redact_uploader_token(body: &str) -> String {
+    let mut out = String::new();
+    let mut rest = body;
+    while let Some(i) = rest.find("upl_") {
+        out.push_str(&rest[..i]);
+        out.push_str("upl_…");
+        rest = &rest[i + 4..];
+        let skip = rest.find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',' || c == '}').unwrap_or(rest.len());
+        rest = &rest[skip..];
+    }
+    out.push_str(rest);
+    out.chars().take(200).collect()
+}
+
 pub fn post(site: &str, token: &str, strings: &[String]) -> Result<Vec<Outcome>, UploadError> {
     let url = format!("{}/api/uploader/ingest", site.trim_end_matches('/'));
     let res = ureq::post(&url)
@@ -87,15 +102,15 @@ pub fn post(site: &str, token: &str, strings: &[String]) -> Result<Vec<Outcome>,
         }
         Err(ureq::Error::Status(401, _)) => Err(UploadError::BadToken),
         Err(ureq::Error::Status(403, r)) => {
-            let body = r.into_string().unwrap_or_default();
+            let body = redact_uploader_token(&r.into_string().unwrap_or_default());
             if body.contains("\"forbidden\"") {
                 Err(UploadError::Http(403, "this account can't upload. Officer, GM, or Webmaster is required".into()))
             } else {
-                Err(UploadError::Http(403, body.chars().take(200).collect()))
+                Err(UploadError::Http(403, body))
             }
         }
         Err(ureq::Error::Status(429, _)) => Err(UploadError::RateLimited),
-        Err(ureq::Error::Status(c, r)) => Err(UploadError::Http(c, r.into_string().unwrap_or_default().chars().take(200).collect())),
+        Err(ureq::Error::Status(c, r)) => Err(UploadError::Http(c, redact_uploader_token(&r.into_string().unwrap_or_default()))),
         Err(e) => Err(UploadError::Network(e.to_string())),
     }
 }
@@ -133,6 +148,12 @@ mod tests {
     fn duplicate_counts_as_done() {
         assert!(done(&Outcome { ty: None, ok: false, error: Some("duplicate".into()) }));
         assert!(!done(&Outcome { ty: None, ok: false, error: Some("bad_sig".into()) }));
+    }
+    #[test]
+    fn http_errors_do_not_keep_an_uploader_token() {
+        let shown = redact_uploader_token(r#"{"error":"bad","token":"upl_supersecretvalue"}"#);
+        assert!(!shown.contains("supersecret"));
+        assert!(shown.contains("upl_…"));
     }
     #[test]
     fn state_roundtrip() {

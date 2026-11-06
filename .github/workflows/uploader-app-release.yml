@@ -20,7 +20,7 @@ jobs:
       matrix:
         include:
           - { os: windows-2022, platform: windows, bundles: nsis, target: x86_64-pc-windows-msvc }
-          - { os: macos-14, platform: macos, bundles: dmg, target: universal-apple-darwin }
+          - { os: macos-15, platform: macos, bundles: dmg, target: universal-apple-darwin }
     runs-on: ${{ matrix.os }}
     defaults: { run: { shell: bash } }
     steps:

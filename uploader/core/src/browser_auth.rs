@@ -745,6 +745,54 @@ mod tests {
     }
 
     #[test]
+    fn missing_or_unsafe_site_does_not_open_a_browser() {
+        for site in ["", "http://evil.example", "https://user:pass@example.com", "https://localhost"] {
+            let mut opened = false;
+            let err = connect_loopback(site, Duration::from_secs(2), &AtomicBool::new(false), |_| {
+                opened = true;
+                true
+            })
+            .unwrap_err();
+            assert!(!opened, "{site}");
+            assert_eq!(err, AuthError::NotDeployed, "{site}");
+            assert!(!err.to_string().contains("upl_"));
+        }
+    }
+
+    #[test]
+    fn mismatched_state_does_not_call_the_token_endpoint() {
+        let mock = spawn_mock("ok");
+        let err = connect_loopback(
+            &mock.base,
+            Duration::from_millis(400),
+            &AtomicBool::new(false),
+            drive_browser(mock.challenge.clone(), "wrong-state".into()),
+        )
+        .unwrap_err();
+        assert_eq!(err, AuthError::Expired);
+        assert_eq!(mock.hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn loopback_port_is_not_shared() {
+        let listener = bind_loopback().unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let second = std::net::TcpListener::bind(("127.0.0.1", port));
+        assert!(second.is_err(), "a second listener bound the loopback port");
+        assert_eq!(listener.local_addr().unwrap().ip(), IpAddr::from([127, 0, 0, 1]));
+    }
+
+    #[test]
+    fn callback_path_must_be_exact_and_a_token_value_is_a_leak() {
+        let ok = parse_callback("/callback?code=abc&state=xyz");
+        assert!(ok.is_callback && !ok.leak && ok.code.as_deref() == Some("abc"));
+        let other = parse_callback("/callback/extra?code=abc");
+        assert!(!other.is_callback);
+        let leak = parse_callback("/callback?access_token=upl_nope&state=xyz");
+        assert!(leak.leak);
+    }
+
+    #[test]
     fn expiry_returns_within_the_deadline() {
         let mock = spawn_mock("ok");
         let start = Instant::now();
