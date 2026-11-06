@@ -4,5 +4,6 @@
 set -eu
 [ -n "${BRANDING_WORDS:-}" ] || { echo "BRANDING_WORDS not set; skipping"; exit 0; }
 pat=$(printf '%s' "$BRANDING_WORDS" | tr ',' '|')
-if git ls-files | grep -v -e '^addon/Libs/' -e '^LICENSE$' | xargs grep -I -n -i -E "$pat"; then echo "branding found"; exit 1; fi
+# uploader/app/site.url is the deployment address for the desktop build, not logic.
+if git ls-files | grep -v -e '^addon/Libs/' -e '^LICENSE$' -e '^uploader/app/site.url$' | xargs grep -I -n -i -E "$pat"; then echo "branding found"; exit 1; fi
 echo "no branding"

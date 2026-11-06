@@ -19,7 +19,6 @@ const TYPE_LABELS = {
   attendance: "attendance",
 };
 
-/** Format Unix seconds, ISO, or Date-parseable strings as local / relative time. */
 function formatUploadTime(raw) {
   if (raw == null || raw === "" || raw === "—") return "Never";
   let d;
@@ -41,12 +40,7 @@ function formatUploadTime(raw) {
     return h === 1 ? "1 hour ago" : `${h} hours ago`;
   }
   if (diffSec >= 86400 && diffSec < 172800) return "Yesterday";
-  return d.toLocaleString(undefined, {
-    day: "numeric",
-    month: "short",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return d.toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
 }
 
 function formatStatus(raw, sent) {
@@ -76,20 +70,14 @@ function humanizeLines(lines) {
   return labels.join(" · ");
 }
 
-function showErr(panelId, msgId, message, fieldId) {
+function showErr(panelId, msgId, message) {
   const panel = $(panelId);
   $(msgId).textContent = sentenceCase(String(message));
   panel.hidden = false;
-  if (fieldId) {
-    document.querySelectorAll("input.is-error").forEach((el) => el.classList.remove("is-error"));
-    const f = $(fieldId);
-    if (f) f.classList.add("is-error");
-  }
 }
 
-function clearErr(panelId, fieldId) {
+function clearErr(panelId) {
   $(panelId).hidden = true;
-  if (fieldId) $(fieldId)?.classList.remove("is-error");
 }
 
 function sentenceCase(s) {
@@ -98,44 +86,69 @@ function sentenceCase(s) {
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
+function setState(name) {
+  document.getElementById("app").dataset.state = name;
+}
+
 function show(id) {
+  $("screen-boot").classList.toggle("hidden", id !== "boot");
   $("screen-setup").classList.toggle("hidden", id !== "setup");
   $("screen-main").classList.toggle("hidden", id !== "main");
+  setState(id);
 }
 
 let lastAddonCheck = null;
-let addonUiState = "idle"; // idle | available | uptodate | updating | failed | deferred
+let addonUiState = "idle";
+let hasToken = false;
+let folderResolved = false;
+let resolvedFolder = "";
+let userPickedFolder = false;
+let connectInFlight = false;
+let startAtLogin = false;
 
-function fillSetup(snap) {
-  $("site-url").value = snap.prefs.siteUrl || snap.defaults.siteUrl || "";
-  $("game-folder").value = snap.prefs.gameFolder || "";
-  $("start-login").checked = !!snap.prefs.startAtLogin;
-  $("token-saved").hidden = !snap.hasToken;
-  const hint = $("token-hint");
-  if (hint) {
-    hint.textContent = snap.hasToken
-      ? "Stored in the OS credential store, never in a file."
-      : "Paste a token from the site (Settings → Uploader tokens). Stored in the OS credential store, never in a file.";
+function setLoginBox(on) {
+  startAtLogin = !!on;
+  $("start-login").checked = startAtLogin;
+  $("start-login-main").checked = startAtLogin;
+}
+
+function showFolder(path) {
+  resolvedFolder = path || "";
+  const label = $("game-folder-label");
+  if (path) {
+    label.hidden = false;
+    label.textContent = path;
+    $("folder-main").hidden = false;
+    $("folder-main-body").textContent = path;
+  } else {
+    label.hidden = true;
+    $("folder-main").hidden = true;
   }
-  const box = $("candidates");
+}
+
+function setFolderUi(showUi, choices) {
+  $("folder-block").hidden = !showUi;
+  const box = $("folder-choices");
   box.innerHTML = "";
-  if (snap.candidates?.length) {
+  if (choices?.length) {
     box.hidden = false;
-    snap.candidates.forEach((p) => {
+    choices.forEach((p) => {
       const b = document.createElement("button");
       b.type = "button";
       b.textContent = p;
-      b.addEventListener("click", () => { $("game-folder").value = p; });
+      b.addEventListener("click", () => chooseFolder(p));
       box.appendChild(b);
     });
-  } else box.hidden = true;
+  } else {
+    box.hidden = true;
+  }
 }
 
-function fillMain(snap) {
-  $("last-upload").textContent = formatUploadTime(snap.prefs.lastUploadAt);
-  $("last-status").textContent = formatStatus(snap.prefs.lastStatus);
-  $("addon-ver").textContent = snap.addonInstalled || snap.prefs.lastAddonVersion || "—";
-  const what = humanizeLines(snap.prefs.lastSentLines);
+function fillMainFromPrefs(prefs) {
+  $("last-upload").textContent = formatUploadTime(prefs.lastUploadAt);
+  $("last-status").textContent = formatStatus(prefs.lastStatus);
+  $("addon-ver").textContent = prefs.lastAddonVersion || "—";
+  const what = humanizeLines(prefs.lastSentLines);
   if (what) {
     $("what-sent-body").textContent = what;
     $("what-sent").hidden = false;
@@ -172,14 +185,9 @@ function setAddonUi(state, check) {
     $("addon-state").hidden = false;
     return;
   }
-  if (state === "failed") {
-    // err panel already filled by caller
-    $("addon-actions").hidden = false;
-    return;
-  }
+  if (state === "failed") return;
   if (state === "available" && c?.updateAvailable) {
-    $("addon-banner-body").textContent =
-      `Install ${c.latest} now? Takes effect after the next game start or /reload.`;
+    $("addon-banner-body").textContent = `Install ${c.latest} now? Takes effect after the next game start or /reload.`;
     $("addon-banner").hidden = false;
     $("addon-actions").hidden = true;
     return;
@@ -190,66 +198,187 @@ function setAddonUi(state, check) {
     $("addon-state").hidden = false;
     return;
   }
-  // uptodate / idle with no update
-  $("addon-state").textContent = "Up to date.";
+  $("addon-state").textContent = c?.latest ? "Up to date." : "Couldn't check for an addon update.";
   $("addon-state").className = "note";
   $("addon-state").hidden = false;
 }
 
-async function refresh() {
-  const snap = await invoke("get_snapshot");
-  fillSetup(snap);
-  fillMain(snap);
-  if (snap.prefs.setupDone && snap.hasToken) {
+function maybeMain() {
+  if (hasToken && folderResolved && !connectInFlight) {
     show("main");
-    try { await invoke("start_watch"); } catch (_) {}
-    try { await refreshAddon(); } catch (_) {}
-  } else show("setup");
-  return snap;
-}
-
-async function refreshAddon() {
-  const c = await invoke("check_addon");
-  if (c.updateAvailable) setAddonUi("available", c);
-  else setAddonUi("uptodate", c);
-  return c;
-}
-
-$("btn-save").addEventListener("click", async () => {
-  clearErr("setup-err", "token");
-  $("site-url").classList.remove("is-error");
-  $("game-folder").classList.remove("is-error");
-  try {
-    const snap = await invoke("save_setup", {
-      input: {
-        siteUrl: $("site-url").value.trim(),
-        token: $("token").value.trim(),
-        gameFolder: $("game-folder").value.trim(),
-        startAtLogin: $("start-login").checked,
-      },
+    setState("main");
+    invoke("start_watch").catch(() => {});
+    invoke("check_addon").then((c) => {
+      if (c.updateAvailable) setAddonUi("available", c);
+      else setAddonUi("uptodate", c);
+    }).catch((e) => {
+      setAddonUi("failed", lastAddonCheck);
+      showErr("addon-err", "addon-err-msg", e);
     });
-    $("token").value = "";
-    fillMain(snap);
-    fillSetup(snap);
-    show("main");
-    await invoke("start_watch");
-    await refreshAddon();
+    invoke("game_running").then((g) => {
+      if (lastAddonCheck) lastAddonCheck.gameRunning = !!g.running;
+      $("addon-warn").hidden = !g.running;
+    }).catch(() => {});
+    return;
+  }
+  show("setup");
+  if (!folderResolved) setState("needs-folder");
+  else if (!hasToken) setState("needs-sign-in");
+  else setState("setup");
+}
+
+function applyToken(status) {
+  hasToken = status?.hasToken === true && status?.state === "present";
+  $("btn-connect").disabled = hasToken || connectInFlight;
+  $("btn-connect").hidden = hasToken;
+  if (status?.state === "unavailable") {
+    $("connect-state").textContent = "Couldn't read the saved sign-in. You can try again.";
+  } else if (hasToken) {
+    $("connect-state").textContent = "Signed in. The token stays in the system credential store.";
+  } else {
+    $("connect-state").textContent = "Not signed in.";
+  }
+  maybeMain();
+}
+
+async function chooseFolder(path) {
+  userPickedFolder = true;
+  clearErr("setup-err");
+  try {
+    await invoke("save_setup", { input: { gameFolder: path, startAtLogin } });
+    folderResolved = true;
+    showFolder(path);
+    $("folder-block").hidden = false;
+    $("folder-hint").textContent = "Using this folder.";
+    $("game-folder-label").hidden = false;
+    $("folder-choices").hidden = true;
+    maybeMain();
   } catch (e) {
-    const msg = String(e);
-    let field = "token";
-    if (/folder|game client/i.test(msg)) field = "game-folder";
-    else if (/site|url/i.test(msg)) field = "site-url";
-    showErr("setup-err", "setup-err-msg", msg, field);
+    folderResolved = false;
+    showErr("setup-err", "setup-err-msg", e);
+    show("setup");
+  }
+}
+
+async function boot() {
+  show("boot");
+  let bootState;
+  try {
+    bootState = await invoke("get_boot");
+  } catch (e) {
+    show("setup");
+    showErr("setup-err", "setup-err-msg", e);
+    $("btn-connect").disabled = false;
+    return;
+  }
+  setLoginBox(bootState.prefs.startAtLogin);
+  fillMainFromPrefs(bootState.prefs);
+  const host = bootState.siteHost || "";
+  $("site-line").textContent = bootState.siteConfigured
+    ? `Sign in opens your browser for ${host}. You don't type an address or a token.`
+    : "This build has no site address, so sign-in and upload are off.";
+  if (!bootState.prefsReadable) {
+    showErr("setup-err", "setup-err-msg", "Saved settings couldn't be read, so they were left unchanged.");
+  }
+  if (!bootState.siteConfigured) $("btn-connect").disabled = true;
+  show("setup");
+  $("connect-state").textContent = "Checking saved sign-in…";
+
+  invoke("token_status").then(applyToken).catch(() => applyToken({ hasToken: false, state: "unavailable" }));
+  invoke("probe_game_folder").then((probe) => {
+    if (userPickedFolder) return;
+    if (probe.resolved && probe.showFolderUi === false) {
+      folderResolved = true;
+      showFolder(probe.resolved);
+      setFolderUi(false, []);
+      invoke("accept_detected_folder", { folder: probe.resolved }).catch((e) => {
+        showErr("setup-err", "setup-err-msg", e);
+      });
+    } else {
+      folderResolved = false;
+      showFolder("");
+      const choices = probe.choices || [];
+      $("folder-hint").textContent = choices.length
+        ? "More than one game folder was found. Pick one. This does not search the whole disk."
+        : "The usual game folder wasn't found. Choose it once. This does not search the whole disk.";
+      setFolderUi(true, choices);
+      setState("needs-folder");
+    }
+    maybeMain();
+  }).catch(() => {
+    if (userPickedFolder) return;
+    folderResolved = false;
+    setFolderUi(true, []);
+    show("setup");
+    setState("needs-folder");
+  });
+}
+
+$("btn-connect").addEventListener("click", async () => {
+  clearErr("setup-err");
+  connectInFlight = true;
+  $("btn-connect").disabled = true;
+  $("btn-cancel-connect").hidden = false;
+  $("connect-state").textContent = "Waiting for the browser…";
+  try {
+    const outcome = await invoke("connect_browser");
+    connectInFlight = false;
+    $("btn-cancel-connect").hidden = true;
+    applyToken({ hasToken: outcome.hasToken === true, state: outcome.hasToken ? "present" : "absent" });
+  } catch (e) {
+    connectInFlight = false;
+    hasToken = false;
+    $("btn-cancel-connect").hidden = true;
+    $("btn-connect").disabled = false;
+    $("connect-state").textContent = "Not signed in.";
+    showErr("setup-err", "setup-err-msg", e);
+    show("setup");
   }
 });
 
-$("btn-setup").addEventListener("click", async () => {
+$("btn-cancel-connect").addEventListener("click", () => {
+  invoke("cancel_connect").catch(() => {});
+});
+
+async function persistLogin(enabled) {
+  setLoginBox(enabled);
   try {
-    const snap = await invoke("get_snapshot");
-    fillSetup(snap);
-  } catch (_) {}
-  clearErr("setup-err", "token");
-  show("setup");
+    await invoke("set_start_at_login", { enabled });
+  } catch (e) {
+    showErr("setup-err", "setup-err-msg", e);
+  }
+}
+
+$("start-login").addEventListener("change", () => persistLogin($("start-login").checked));
+$("start-login-main").addEventListener("change", () => persistLogin($("start-login-main").checked));
+
+$("btn-browse").addEventListener("click", async () => {
+  try {
+    const selected = await invoke("pick_folder");
+    if (selected) await chooseFolder(selected);
+  } catch (e) {
+    showErr("setup-err", "setup-err-msg", e);
+  }
+});
+
+$("btn-change-folder").addEventListener("click", async () => {
+  try {
+    const selected = await invoke("pick_folder");
+    if (selected) await chooseFolder(selected);
+  } catch (e) {
+    showErr("upload-err", "upload-err-msg", e);
+  }
+});
+
+$("btn-disconnect").addEventListener("click", async () => {
+  clearErr("upload-err");
+  try {
+    const status = await invoke("clear_token");
+    applyToken(status);
+    show("setup");
+  } catch (e) {
+    showErr("upload-err", "upload-err-msg", e);
+  }
 });
 
 $("btn-upload").addEventListener("click", async () => {
@@ -268,7 +397,12 @@ $("btn-upload").addEventListener("click", async () => {
     $("upload-ok").textContent = r.sent ? `Sent ${r.sent}.` : "Nothing new.";
     $("upload-ok").hidden = false;
   } catch (e) {
-    showErr("upload-err", "upload-err-msg", e);
+    const msg = String(e);
+    showErr("upload-err", "upload-err-msg", msg);
+    if (/rejected the uploader token|sign in/i.test(msg)) {
+      hasToken = false;
+      applyToken({ hasToken: false, state: "absent" });
+    }
   } finally {
     if (addonUiState !== "updating") $("btn-upload").disabled = false;
   }
@@ -276,7 +410,11 @@ $("btn-upload").addEventListener("click", async () => {
 
 $("btn-check").addEventListener("click", async () => {
   clearErr("addon-err");
-  try { await refreshAddon(); } catch (e) {
+  try {
+    const c = await invoke("check_addon");
+    if (c.updateAvailable) setAddonUi("available", c);
+    else setAddonUi("uptodate", c);
+  } catch (e) {
     setAddonUi("failed", lastAddonCheck);
     showErr("addon-err", "addon-err-msg", e);
   }
@@ -287,7 +425,8 @@ async function runAddonUpdate() {
   setAddonUi("updating", lastAddonCheck);
   try {
     const ver = await invoke("update_addon");
-    await refreshAddon();
+    const c = await invoke("check_addon");
+    setAddonUi(c.updateAvailable ? "available" : "uptodate", c);
     $("addon-state").textContent = `Installed ${ver}.`;
     $("addon-state").className = "note ok";
     $("addon-state").hidden = false;
@@ -298,214 +437,202 @@ async function runAddonUpdate() {
 }
 
 $("btn-addon-update").addEventListener("click", () => runAddonUpdate());
-$("btn-addon-later").addEventListener("click", () => {
-  setAddonUi("deferred", lastAddonCheck);
-});
+$("btn-addon-later").addEventListener("click", () => setAddonUi("deferred", lastAddonCheck));
 $("btn-addon-skip").addEventListener("click", async () => {
   clearErr("addon-err");
   try {
     const ver = lastAddonCheck?.latest;
     if (ver) await invoke("skip_addon_version", { version: ver });
-    await refreshAddon();
+    const c = await invoke("check_addon");
+    setAddonUi(c.updateAvailable ? "available" : "uptodate", c);
   } catch (e) {
     setAddonUi("failed", lastAddonCheck);
     showErr("addon-err", "addon-err-msg", e);
   }
 });
 
-$("btn-browse").addEventListener("click", async () => {
-  try {
-    const selected = await invoke("pick_folder");
-    if (selected) $("game-folder").value = selected;
-  } catch (_) {}
-});
-
 listen("sv-changed", () => $("btn-upload").click());
 listen("tray-upload", () => $("btn-upload").click());
-listen("prefs-changed", () => refresh());
+listen("autostart-failed", (event) => {
+  const msg = event?.payload || "Couldn't change start at login.";
+  showErr("setup-err", "setup-err-msg", msg);
+});
 
-// Browser preview harness for Playwright / Vizz (no Tauri)
 if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
   window.__PREVIEW__ = true;
   const q = new URLSearchParams(location.search);
   const os = q.get("os") || "win";
-  const winCand = ["C:\\Program Files (x86)\\World of Warcraft\\_classic_era_"];
-  const macCand = ["/Applications/World of Warcraft/_classic_era_"];
+  const screen = q.get("screen") || "signin";
+  const winFolder = "C:\\Program Files (x86)\\World of Warcraft\\_forever_";
+  const macChoices = [
+    "/Applications/World of Warcraft/_forever_",
+    "/Users/member/Games/World of Warcraft/_classic_",
+  ];
   const mock = {
     prefs: {
       siteUrl: "",
       gameFolder: "",
-      startAtLogin: false,
+      startAtLogin: screen === "existing-off" ? false : true,
       setupDone: false,
       lastUploadAt: null,
       lastStatus: null,
       lastAddonVersion: null,
       lastSentLines: null,
       skippedAddonVersion: null,
-      addonName: "",
+      addonName: "ExampleAddon",
     },
     hasToken: false,
-    candidates: os === "mac" ? macCand : winCand,
+    tokenState: "absent",
+    folder: null,
+    choices: [],
+    siteConfigured: screen !== "no-site",
+    siteHost: screen === "no-site" ? "" : "example.invalid",
+    prefsReadable: screen !== "corrupt-prefs",
+    origin: screen === "existing-off" ? "existingFile" : "firstInstall",
+    gameRunning: q.get("running") === "1",
     addonInstalled: null,
-    gameRunning: false,
-    defaults: { siteUrl: "https://example.guild", addonName: "ExampleAddon", githubRepo: "org/repo" },
+    _latest: "0.1.2",
+    _forceUpdate: true,
   };
-  let addonFailNext = false;
-  window.__TAURI__ = {
-    core: {
-      invoke: async (cmd, args) => {
-        if (cmd === "get_snapshot") return structuredClone(mock);
-        if (cmd === "save_setup") {
-          if (!args.input.token && !mock.hasToken) {
-            throw "Paste an uploader token from the site (Settings → Uploader tokens).";
-          }
-          if (args.input.token && !args.input.token.startsWith("upl_")) {
-            throw "Token should start with upl_.";
-          }
-          if (!args.input.gameFolder) {
-            throw "That folder doesn't look like a game client (need WTF or Interface/AddOns).";
-          }
-          Object.assign(mock.prefs, {
-            siteUrl: args.input.siteUrl,
-            gameFolder: args.input.gameFolder,
-            startAtLogin: args.input.startAtLogin,
-            setupDone: true,
-            lastStatus: "ready",
-          });
-          mock.hasToken = true;
-          mock.addonInstalled = mock.addonInstalled || "0.1.1";
-          return structuredClone(mock);
-        }
-        if (cmd === "upload_now") {
-          const secs = Math.floor(Date.now() / 1000);
-          mock.prefs.lastUploadAt = String(secs);
-          mock.prefs.lastStatus = "sent 2";
-          mock.prefs.lastSentLines = ["gbank accepted", "signup accepted"];
-          return {
-            found: 2,
-            sent: 2,
-            lines: mock.prefs.lastSentLines,
-            at: mock.prefs.lastUploadAt,
-            status: "sent 2",
-          };
-        }
-        if (cmd === "check_addon") {
-          const installed = mock.addonInstalled || "0.1.1";
-          const latest = mock._latest || "0.1.2";
-          const skipped = mock.prefs.skippedAddonVersion;
-          const updateAvailable =
-            mock._forceUpdate === false
-              ? false
-              : skipped === latest
-                ? false
-                : (mock._forceUpdate === true || installed !== latest);
-          return {
-            installed,
-            latest,
-            tag: `addon-v${latest}`,
-            updateAvailable,
-            gameRunning: !!mock.gameRunning,
-          };
-        }
-        if (cmd === "update_addon") {
-          if (addonFailNext || mock._failUpdate) {
-            addonFailNext = false;
-            throw "Couldn't download the release. Check your network and try again.";
-          }
-          await new Promise((r) => setTimeout(r, mock._updateDelay || 0));
-          mock.addonInstalled = mock._latest || "0.1.2";
-          mock.prefs.lastAddonVersion = mock.addonInstalled;
-          return mock.addonInstalled;
-        }
-        if (cmd === "skip_addon_version") {
-          mock.prefs.skippedAddonVersion = args.version;
-          return null;
-        }
-        if (cmd === "start_watch") return null;
-        throw new Error("unknown " + cmd);
-      },
-    },
-    event: { listen: async () => () => {} },
-    dialog: { open: async () => null },
-  };
-
-  const screen = q.get("screen") || "setup";
-  const addon = q.get("addon") || "available";
-
-  if (screen === "main" || screen === "setup-token" || screen.startsWith("main")) {
-    mock.prefs.setupDone = true;
+  if (screen === "existing-off") {
     mock.hasToken = true;
-    mock.prefs.siteUrl = "https://example.guild";
-    mock.prefs.gameFolder = mock.candidates[0];
+    mock.tokenState = "present";
+    mock.folder = os === "mac" ? macChoices[0] : winFolder;
+    mock.prefs.gameFolder = mock.folder;
+    mock.prefs.setupDone = true;
   }
-  if (screen === "main" || screen.startsWith("main")) {
-    // Unix seconds ~ 4 Nov 2026 12:00 local-ish demo
+  if (screen === "main" || screen === "denied" || screen === "expired" || screen === "cancelled") {
+    mock.hasToken = screen === "main";
+    mock.tokenState = mock.hasToken ? "present" : "absent";
+    mock.folder = os === "mac" ? macChoices[0] : winFolder;
+    mock.prefs.gameFolder = mock.folder;
+    mock.prefs.setupDone = true;
     mock.prefs.lastUploadAt = "1762254000";
     mock.prefs.lastStatus = "sent 2";
     mock.prefs.lastSentLines = ["gbank accepted", "signup accepted"];
     mock.addonInstalled = "0.1.1";
   }
-  if (addon === "uptodate") {
+  if (screen === "folder" || screen === "mac-choices") {
+    mock.folder = null;
+    mock.choices = screen === "mac-choices" || os === "mac" ? macChoices : [];
+  }
+  if (screen === "signin" || screen === "signin-found") {
+    mock.folder = os === "mac" ? macChoices[0] : winFolder;
+  }
+  if (q.get("addon") === "uptodate") {
     mock.addonInstalled = "0.1.2";
     mock._latest = "0.1.2";
     mock._forceUpdate = false;
-    mock.prefs.lastUploadAt = null;
-    mock.prefs.lastStatus = null;
-    mock.prefs.lastSentLines = null;
-  } else if (addon === "available") {
-    mock.addonInstalled = "0.1.1";
-    mock._latest = "0.1.2";
-    mock._forceUpdate = true;
-  } else if (addon === "updating") {
-    mock.addonInstalled = "0.1.1";
-    mock._latest = "0.1.2";
-    mock._forceUpdate = true;
-    mock._updateDelay = 60000;
-  } else if (addon === "failed") {
-    mock.addonInstalled = "0.1.1";
-    mock._latest = "0.1.2";
-    mock._forceUpdate = true;
-    mock._failUpdate = true;
   }
 
-  // After first paint, drive special screens
-  window.__PREVIEW_BOOT__ = async () => {
-    await refresh();
-    if (screen === "setup-error") {
-      show("setup");
-      fillSetup(await invoke("get_snapshot"));
-      $("site-url").value = "https://example.guild";
-      showErr(
-        "setup-err",
-        "setup-err-msg",
-        "Paste an uploader token from the site (Settings → Uploader tokens).",
-        "token",
-      );
-    } else if (screen === "setup-token") {
-      show("setup");
-      fillSetup(await invoke("get_snapshot"));
-    } else if (addon === "updating") {
-      setAddonUi("available", await invoke("check_addon"));
-      setAddonUi("updating", lastAddonCheck);
-    } else if (addon === "failed") {
-      setAddonUi("available", await invoke("check_addon"));
-      setAddonUi("failed", lastAddonCheck);
-      showErr(
-        "addon-err",
-        "addon-err-msg",
-        "Couldn't download the release. Check your network and try again.",
-      );
-    } else if (addon === "deferred") {
-      setAddonUi("deferred", await invoke("check_addon"));
-    }
+  window.__TAURI__ = {
+    core: {
+      invoke: async (cmd, args) => {
+        if (cmd === "get_boot") {
+          if (screen === "slow-boot") await new Promise((r) => setTimeout(r, 400));
+          return {
+            prefs: structuredClone(mock.prefs),
+            origin: mock.origin,
+            siteConfigured: mock.siteConfigured,
+            siteHost: mock.siteHost,
+            prefsReadable: mock.prefsReadable,
+          };
+        }
+        if (cmd === "token_status") {
+          if (screen === "slow-token") await new Promise((r) => setTimeout(r, 800));
+          return { hasToken: mock.hasToken, state: mock.tokenState };
+        }
+        if (cmd === "probe_game_folder") {
+          if (screen === "slow-probe") await new Promise((r) => setTimeout(r, 800));
+          if (mock.folder && !mock.choices.length) {
+            return { resolved: mock.folder, source: os === "mac" ? "platformProbe" : "canonicalForever", showFolderUi: false, choices: [] };
+          }
+          return { resolved: null, source: "none", showFolderUi: true, choices: mock.choices };
+        }
+        if (cmd === "connect_browser") {
+          if (screen === "denied") throw "This account can't upload. Officer, GM, or Webmaster is required.";
+          if (screen === "expired") throw "Sign-in expired. Try again.";
+          if (screen === "cancelled") throw "Sign-in cancelled. Nothing was saved.";
+          if (screen === "offline") throw "Couldn't reach the site to sign in. Nothing was saved.";
+          mock.hasToken = true;
+          mock.tokenState = "present";
+          return { hasToken: true };
+        }
+        if (cmd === "cancel_connect") return null;
+        if (cmd === "accept_detected_folder" || cmd === "save_setup") {
+          const folder = args.folder || args.input?.gameFolder;
+          if (!folder) throw "That folder doesn't look like a game client (need WTF, Interface/AddOns, or Wow.exe).";
+          mock.folder = folder;
+          mock.prefs.gameFolder = folder;
+          mock.prefs.setupDone = true;
+          if (args.input) mock.prefs.startAtLogin = !!args.input.startAtLogin;
+          return null;
+        }
+        if (cmd === "set_start_at_login") {
+          mock.prefs.startAtLogin = !!args.enabled;
+          return null;
+        }
+        if (cmd === "clear_token") {
+          mock.hasToken = false;
+          mock.tokenState = "absent";
+          return { hasToken: false, state: "absent" };
+        }
+        if (cmd === "pick_folder") {
+          return os === "mac"
+            ? "/Users/member/Games/World of Warcraft/_forever_"
+            : "D:\\Program Files\\World of Warcraft\\_forever_";
+        }
+        if (cmd === "upload_now") {
+          if (screen === "offline") throw "couldn't reach the site: offline";
+          const secs = Math.floor(Date.now() / 1000);
+          mock.prefs.lastUploadAt = String(secs);
+          mock.prefs.lastStatus = "sent 2";
+          mock.prefs.lastSentLines = ["gbank accepted"];
+          return { found: 1, sent: 1, lines: mock.prefs.lastSentLines, at: mock.prefs.lastUploadAt, status: "sent 2" };
+        }
+        if (cmd === "check_addon") {
+          if (screen === "offline") throw "couldn't reach GitHub: offline";
+          const installed = mock.addonInstalled || "0.1.1";
+          const latest = mock._latest || "0.1.2";
+          return {
+            installed,
+            latest,
+            tag: `addon-v${latest}`,
+            updateAvailable: mock._forceUpdate === true && installed !== latest,
+            gameRunning: false,
+          };
+        }
+        if (cmd === "game_running") return { running: !!mock.gameRunning };
+        if (cmd === "update_addon") {
+          mock.addonInstalled = mock._latest;
+          return mock.addonInstalled;
+        }
+        if (cmd === "skip_addon_version") {
+          mock.prefs.skippedAddonVersion = args.version;
+          mock._forceUpdate = false;
+          return null;
+        }
+        if (cmd === "start_watch") return null;
+        if (cmd === "check_self_update") return { current: "0.1.0", latest: "0.1.0", updateAvailable: false };
+        throw new Error("unknown " + cmd);
+      },
+    },
+    event: { listen: async () => () => {} },
   };
 }
 
-const boot = window.__PREVIEW_BOOT__
-  ? window.__PREVIEW_BOOT__()
-  : refresh();
-
-boot.catch((e) => {
-  showErr("setup-err", "setup-err-msg", e, "token");
+const bootPromise = boot();
+bootPromise.catch((e) => {
+  showErr("setup-err", "setup-err-msg", e);
   show("setup");
 });
+
+if (window.__PREVIEW__) {
+  const previewScreen = new URLSearchParams(location.search).get("screen");
+  bootPromise.then(() => {
+    if (["denied", "expired", "cancelled", "offline"].includes(previewScreen)) {
+      $("btn-connect").disabled = false;
+      $("btn-connect").click();
+    }
+  });
+}

@@ -13,33 +13,34 @@
       <p class="sub">Reads SavedVariables only. Never touches the game process.</p>
     </header>
 
-    <section id="screen-setup" class="screen hidden" aria-label="Setup">
-      <h2>Setup</h2>
-      <label>Site URL
-        <input id="site-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://example.com" />
-      </label>
-      <label>Uploader token
-        <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="upl_…" />
-      </label>
-      <p id="token-saved" class="token-saved" hidden>Token saved. Paste a new one only to replace it.</p>
-      <p id="token-hint" class="hint">Paste a token from the site (Settings → Uploader tokens). Stored in the OS credential store, never in a file.</p>
-      <label>Game folder
-        <div class="row">
-          <input id="game-folder" type="text" autocomplete="off" spellcheck="false" placeholder="…/World of Warcraft/_classic_era_" />
-          <button type="button" id="btn-browse" class="secondary">Browse</button>
+    <section id="screen-boot" class="screen" aria-label="Opening" aria-live="polite">
+      <h2>Opening…</h2>
+      <p class="note">This window stays usable if the network, a saved sign-in, or a folder check is slow.</p>
+    </section>
+
+    <section id="screen-setup" class="screen hidden" aria-label="Sign in">
+      <h2>Sign in</h2>
+      <p id="site-line" class="hint"></p>
+      <p id="connect-state" class="note">Checking saved sign-in…</p>
+      <div id="folder-block" hidden>
+        <p id="folder-hint" class="hint">The usual game folder wasn't found. Choose it once. This does not search the whole disk.</p>
+        <p id="game-folder-label" class="detail" hidden></p>
+        <div id="folder-choices" class="candidates" hidden></div>
+        <div class="actions">
+          <button type="button" id="btn-browse" class="secondary">Choose game folder</button>
         </div>
-      </label>
-      <div id="candidates" class="candidates" hidden></div>
+      </div>
       <label class="check"><input id="start-login" type="checkbox" /> Start at login</label>
       <div id="setup-err" class="err" role="alert" hidden>
         <i aria-hidden="true"></i>
         <div>
-          <strong>Couldn't save</strong>
+          <strong>Couldn't continue</strong>
           <span id="setup-err-msg"></span>
         </div>
       </div>
       <div class="actions">
-        <button type="button" id="btn-save" class="primary">Save and continue</button>
+        <button type="button" id="btn-connect" class="primary" disabled>Sign in with browser</button>
+        <button type="button" id="btn-cancel-connect" class="secondary" hidden>Cancel</button>
       </div>
     </section>
 
@@ -59,9 +60,12 @@
         </div>
       </div>
       <p id="upload-ok" class="note ok" hidden></p>
+      <p id="folder-main" class="detail" hidden><span class="lbl">Game folder</span><span id="folder-main-body"></span></p>
+      <label class="check"><input id="start-login-main" type="checkbox" /> Start at login</label>
       <div class="actions">
         <button type="button" id="btn-upload" class="primary">Upload now</button>
-        <button type="button" id="btn-setup" class="secondary">Setup</button>
+        <button type="button" id="btn-change-folder" class="secondary">Change folder</button>
+        <button type="button" id="btn-disconnect" class="secondary">Sign out</button>
       </div>
 
       <h2 class="mt">Addon update</h2>

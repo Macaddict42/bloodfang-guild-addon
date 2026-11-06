@@ -6,7 +6,8 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct AddonRelease {
@@ -59,8 +60,22 @@ pub fn latest_addon(repo: &str, addon_name: &str) -> Result<Option<AddonRelease>
     Ok(best)
 }
 
+fn http_agent(overall: Duration) -> ureq::Agent {
+    let connect = Duration::from_secs(5).min(overall);
+    ureq::AgentBuilder::new()
+        .timeout_connect(connect)
+        .timeout_read(overall)
+        .timeout(overall)
+        .build()
+}
+
 fn get(url: &str) -> Result<String, UpdateError> {
-    ureq::get(url)
+    get_with(url, &http_agent(Duration::from_secs(20)))
+}
+
+fn get_with(url: &str, agent: &ureq::Agent) -> Result<String, UpdateError> {
+    agent
+        .get(url)
         .set("User-Agent", "guild-uploader")
         .set("Accept", "application/vnd.github+json")
         .call()
@@ -70,13 +85,14 @@ fn get(url: &str) -> Result<String, UpdateError> {
 }
 
 fn get_bytes(url: &str) -> Result<Vec<u8>, UpdateError> {
-    let mut r = ureq::get(url)
+    let r = http_agent(Duration::from_secs(30))
+        .get(url)
         .set("User-Agent", "guild-uploader")
         .call()
         .map_err(|e| UpdateError::Network(e.to_string()))?
         .into_reader();
     let mut buf = vec![];
-    r.read_to_end(&mut buf).map_err(|e| UpdateError::Network(e.to_string()))?;
+    r.take(64 * 1024 * 1024).read_to_end(&mut buf).map_err(|e| UpdateError::Network(e.to_string()))?;
     Ok(buf)
 }
 
@@ -227,27 +243,96 @@ pub fn latest_app(repo: &str) -> Result<Option<AddonRelease>, UpdateError> {
     Ok(best)
 }
 
-/// Heuristic: a process named like the Forever client is running (for the /reload warning only).
+/// Wait until `cmd` exits or `budget` elapses. On expiry the child is killed.
+/// `None` means it did not finish in time (or could not be spawned).
+pub fn command_output_within(mut cmd: Command, budget: Duration) -> Option<std::process::Output> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut child = cmd.spawn().ok()?;
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) if start.elapsed() >= budget => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(30)),
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Heuristic: a process named like the client is running (for the /reload warning only).
+/// The check is killed if it exceeds 2 seconds. It never opens the game.
 pub fn game_seems_running() -> bool {
+    let budget = Duration::from_secs(2);
     #[cfg(target_os = "windows")]
     {
-        Command::new("tasklist").output().ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_ascii_lowercase())
-            .map(|s| s.contains("wow.exe") || s.contains("wowclassic.exe") || s.contains("world of warcraft"))
+        let cmd = Command::new("tasklist");
+        command_output_within(cmd, budget)
+            .map(|o| {
+                let s = String::from_utf8_lossy(&o.stdout).to_ascii_lowercase();
+                s.contains("wow.exe") || s.contains("wowclassic.exe")
+            })
             .unwrap_or(false)
     }
     #[cfg(not(target_os = "windows"))]
     {
-        Command::new("pgrep").args(["-if", "Wow|World of Warcraft"]).status().map(|s| s.success()).unwrap_or(false)
+        let mut cmd = Command::new("pgrep");
+        cmd.args(["-if", "Wow|World of Warcraft"]);
+        command_output_within(cmd, budget).map(|o| o.status.success()).unwrap_or(false)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+    use std::io::Write;
+
     #[test]
     fn sums_parse() {
         let s = "abc123  Addon-0.1.1.zip\ndef  other\n";
         assert_eq!(sums_entry(s, "Addon-0.1.1.zip").as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn command_budget_kills_a_slow_child() {
+        let start = Instant::now();
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let out = command_output_within(cmd, Duration::from_millis(250));
+        let elapsed = start.elapsed();
+        assert!(out.is_none(), "sleep should be killed");
+        assert!(elapsed < Duration::from_secs(2), "budget elapsed {elapsed:?}");
+        eprintln!("MEASURE command_budget elapsed_ms={}", elapsed.as_millis());
+    }
+
+    #[test]
+    fn http_read_timeout_returns_without_hanging() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n");
+                std::thread::sleep(Duration::from_secs(30));
+            }
+        });
+        let start = Instant::now();
+        let result = get_with(&format!("http://127.0.0.1:{port}/slow"), &http_agent(Duration::from_millis(400)));
+        let elapsed = start.elapsed();
+        assert!(result.is_err());
+        assert!(elapsed < Duration::from_secs(3), "http elapsed {elapsed:?}");
+        eprintln!("MEASURE http_read_timeout elapsed_ms={}", elapsed.as_millis());
+    }
+
+    #[test]
+    fn game_check_on_this_machine_is_bounded() {
+        let start = Instant::now();
+        let _running = game_seems_running();
+        let elapsed = start.elapsed();
+        assert!(elapsed < Duration::from_secs(3), "game check elapsed {elapsed:?}");
+        eprintln!("MEASURE game_seems_running elapsed_ms={}", elapsed.as_millis());
     }
 }

@@ -4,14 +4,13 @@ Tray/menu-bar app that watches the addon’s SavedVariables and uploads new expo
 strings to the site. Also installs addon updates from GitHub releases after
 verifying `SHA256SUMS`. Files only — it never reads or writes the game process.
 
-Build-time non-secret defaults (set in CI from repo variables):
+Build-time non-secret defaults:
 
-- `SITE_URL` — pre-fills Setup
+- `SITE_URL` — baked site address. CI uses the repo variable when it is set, otherwise `uploader/app/site.url`. Users do not type it.
 - `ADDON_NAME` — SavedVariables / AddOns folder name
 - `GITHUB_REPO` — `owner/name` for release lookups
 
-The uploader token is stored only in the OS credential store (Windows Credential
-Manager / macOS Keychain). Prefs JSON never contains it.
+Sign-in opens the system browser. The site session approves an uploader token, which is stored only in the OS credential store (Windows Credential Manager / macOS Keychain). Prefs JSON never contains it. The usual Windows game folder is detected. Start at login is on for a first install; a stored choice, including off, is kept.
 
 ## Dev
 

@@ -1,7 +1,9 @@
 //! Uploader core (SPEC §19). Files only: reads `WTF/Account/*/SavedVariables/<addon>.lua` and posts the
 //! signed export strings it finds to the site's `/api/uploader/ingest`. It never reads, writes or talks to
 //! the game process, and it never edits SavedVariables.
+pub mod browser_auth;
 pub mod detect;
+pub mod launch;
 pub mod update;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -10,7 +12,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub use detect::{candidates, looks_like_game_dir};
+pub use detect::{candidates, folder_acceptable, looks_like_game_dir, probe_explicit, probe_game_folder, FolderProbe, FolderSource};
+pub use launch::quote_windows_run;
 pub use update::{latest_addon, latest_app, install_addon, installed_version, addons_dir, game_seems_running, AddonRelease, UpdateError};
 
 /// Types the site's uploader endpoint accepts.
@@ -83,6 +86,14 @@ pub fn post(site: &str, token: &str, strings: &[String]) -> Result<Vec<Outcome>,
             r.into_json::<Body>().map(|b| b.results).map_err(|e| UploadError::Network(e.to_string()))
         }
         Err(ureq::Error::Status(401, _)) => Err(UploadError::BadToken),
+        Err(ureq::Error::Status(403, r)) => {
+            let body = r.into_string().unwrap_or_default();
+            if body.contains("\"forbidden\"") {
+                Err(UploadError::Http(403, "this account can't upload. Officer, GM, or Webmaster is required".into()))
+            } else {
+                Err(UploadError::Http(403, body.chars().take(200).collect()))
+            }
+        }
         Err(ureq::Error::Status(429, _)) => Err(UploadError::RateLimited),
         Err(ureq::Error::Status(c, r)) => Err(UploadError::Http(c, r.into_string().unwrap_or_default().chars().take(200).collect())),
         Err(e) => Err(UploadError::Network(e.to_string())),

@@ -2,6 +2,7 @@ name: uploader-app
 on:
   push:
     tags: ["uploader-app-v*"]
+  pull_request:
   workflow_dispatch:
     inputs:
       make_draft:
@@ -46,7 +47,13 @@ jobs:
           GITHUB_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          export SITE_URL="${SITE_URL:-}"
+          DEFAULT_SITE=""
+          if [ -f "$GITHUB_WORKSPACE/uploader/app/site.url" ]; then
+            DEFAULT_SITE="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/uploader/app/site.url")"
+          fi
+          # Repo variable wins when set. The file is the deployment default so a
+          # release build still has an address when the variable is empty.
+          export SITE_URL="${SITE_URL:-$DEFAULT_SITE}"
           export ADDON_NAME="${ADDON_NAME:-}"
           export GITHUB_REPO="${GITHUB_REPO:-$GITHUB_REPOSITORY}"
           cargo tauri build --bundles "${{ matrix.bundles }}" --target "${{ matrix.target }}"
@@ -81,6 +88,7 @@ jobs:
           ls -la
       # Signing: SignPath later; unsigned for now (SPEC §18c).
       - uses: actions/attest-build-provenance@v2
+        if: github.event_name != 'pull_request'
         with: { subject-path: "dist/*" }
       - uses: actions/upload-artifact@v4
         with:
