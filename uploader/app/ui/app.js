@@ -53,8 +53,16 @@ function humanizeLines(lines) {
   return linesApi().humanizeUploadLines(lines);
 }
 
-function showRecovery(on) {
-  $("connect-recovery").hidden = !on;
+function showRecovery(phase) {
+  const el = $("connect-recovery");
+  if (!phase) {
+    el.hidden = true;
+    return null;
+  }
+  const panel = window.connectRecovery.connectPhase(phase);
+  el.textContent = panel.recovery;
+  el.hidden = false;
+  return panel;
 }
 
 function showErr(panelId, msgId, message, title) {
@@ -309,11 +317,11 @@ async function boot() {
 function beginWait() {
   clearErr("setup-err");
   connectInFlight = true;
+  const panel = showRecovery("waiting");
   $("btn-connect").disabled = true;
-  $("btn-switch").hidden = true;
-  $("btn-cancel-connect").hidden = false;
-  $("connect-state").textContent = "Waiting for the browser.";
-  showRecovery(true);
+  $("btn-switch").hidden = panel.switchHidden;
+  $("btn-cancel-connect").hidden = panel.cancelHidden;
+  $("connect-state").textContent = panel.status;
   show("setup");
   setState("waiting");
 }
@@ -327,8 +335,15 @@ function failConnect(message) {
   $("btn-switch").hidden = false;
   const text = String(message);
   const cancelled = /cancelled/i.test(text);
-  showRecovery(cancelled);
-  $("connect-state").textContent = cancelled ? "Sign-in didn't finish." : "Nothing was saved.";
+  if (cancelled) {
+    const panel = showRecovery("cancelled");
+    $("btn-cancel-connect").hidden = panel.cancelHidden;
+    $("btn-switch").hidden = panel.switchHidden;
+    $("connect-state").textContent = panel.status;
+  } else {
+    showRecovery(false);
+    $("connect-state").textContent = "Nothing was saved.";
+  }
   const title = /right role/i.test(text) ? "Couldn't sign in" : "Couldn't continue";
   showErr("setup-err", "setup-err-msg", text, title);
   show("setup");
