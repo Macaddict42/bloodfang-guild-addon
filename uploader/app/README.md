@@ -1,4 +1,4 @@
-# Guild Uploader (desktop)
+# Desktop uploader
 
 Tray/menu-bar app that watches the addon’s SavedVariables and uploads new export
 strings to the site. Also installs addon updates from GitHub releases after

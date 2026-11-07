@@ -275,7 +275,7 @@ fn bind_loopback() -> Result<TcpListener, AuthError> {
     Ok(TcpListener::from(socket))
 }
 
-const CLOSE_HTML: &str = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Guild Uploader</title></head><body><p>You can close this tab.</p></body></html>";
+const CLOSE_HTML: &str = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>You can close this tab</title></head><body><p>You can close this tab.</p></body></html>";
 
 fn write_html(stream: &mut TcpStream, status: &str) {
     let body = CLOSE_HTML;

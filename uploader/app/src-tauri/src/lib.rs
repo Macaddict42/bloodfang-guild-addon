@@ -1,6 +1,7 @@
 mod autostart;
 mod baked;
 mod config;
+mod tray_life;
 
 use guild_uploader_core as core;
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
@@ -12,7 +13,7 @@ use std::time::Duration;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State,
+    AppHandle, Emitter, Manager, State, WindowEvent,
 };
 
 struct AppState {
@@ -542,6 +543,54 @@ async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
     rx.await.map_err(|e| e.to_string())
 }
 
+struct TrayLife {
+    tray_ready: AtomicBool,
+    exiting: AtomicBool,
+}
+
+fn restore_main(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn install_tray(app: &tauri::App) -> Result<(), String> {
+    let show = MenuItem::with_id(app, "show", tray_life::MENU_SHOW, true, None::<&str>).map_err(|e| e.to_string())?;
+    let upload = MenuItem::with_id(app, "upload", "Upload now", true, None::<&str>).map_err(|e| e.to_string())?;
+    let exit = MenuItem::with_id(app, "exit", tray_life::MENU_EXIT, true, None::<&str>).map_err(|e| e.to_string())?;
+    let menu = Menu::with_items(app, &[&show, &upload, &exit]).map_err(|e| e.to_string())?;
+    let icon = app.default_window_icon().cloned().ok_or_else(|| "This build has no window icon.".to_string())?;
+    let mut tray = TrayIconBuilder::new()
+        .menu(&menu)
+        .icon(icon)
+        .icon_as_template(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "exit" => {
+                if let Some(life) = app.try_state::<TrayLife>() {
+                    life.exiting.store(true, Ordering::SeqCst);
+                }
+                app.exit(0);
+            }
+            "show" => restore_main(app),
+            "upload" => {
+                let _ = app.emit("tray-upload", ());
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                restore_main(tray.app_handle());
+            }
+        });
+    if let Some(name) = app.config().product_name.as_deref() {
+        tray = tray.tooltip(name);
+    }
+    tray.build(app).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let loaded = config::load_prefs();
@@ -553,10 +602,7 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            restore_main(app);
         }))
         .manage(AppState {
             prefs: Mutex::new(loaded.prefs),
@@ -585,43 +631,47 @@ pub fn run() {
             pick_folder
         ])
         .setup(|app| {
-            let show = MenuItem::with_id(app, "show", "Open", true, None::<&str>)?;
-            let upload = MenuItem::with_id(app, "upload", "Upload now", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &upload, &quit])?;
-            let _tray = TrayIconBuilder::new()
-                .menu(&menu)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "quit" => app.exit(0),
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
-                    "upload" => {
-                        let _ = app.emit("tray-upload", ());
-                    }
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                        let app = tray.app_handle();
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
-                })
-                .icon(app.default_window_icon().unwrap().clone())
-                .build(app)?;
+            let tray_ready = match install_tray(app) {
+                Ok(()) => true,
+                Err(err) => {
+                    eprintln!("tray icon was not created: {err}");
+                    false
+                }
+            };
+            app.manage(TrayLife {
+                tray_ready: AtomicBool::new(tray_ready),
+                exiting: AtomicBool::new(false),
+            });
             if autostart::launched_hidden() {
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
+                    if tray_life::hidden_launch_keeps_window_visible(tray_ready) {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    } else {
+                        let _ = window.hide();
+                    }
                 }
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Guild Uploader");
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let life = window.try_state::<TrayLife>();
+                let tray_ready = life.as_ref().map(|life| life.tray_ready.load(Ordering::SeqCst)).unwrap_or(false);
+                let exiting = life.as_ref().map(|life| life.exiting.load(Ordering::SeqCst)).unwrap_or(false);
+                if tray_life::close_should_hide(tray_ready, exiting) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("the desktop app failed to start")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(life) = app.try_state::<TrayLife>() {
+                    life.exiting.store(true, Ordering::SeqCst);
+                }
+            }
+        });
 }
