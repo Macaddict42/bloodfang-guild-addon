@@ -3,9 +3,10 @@ mod baked;
 mod config;
 mod install_hook;
 mod tray_life;
+mod upload_gate;
 
 use guild_uploader_core as core;
-use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
+use notify_debouncer_mini::new_debouncer;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,6 +24,7 @@ struct AppState {
     watching: Mutex<bool>,
     connect_cancel: Mutex<Option<Arc<AtomicBool>>>,
     autostart_lock: Mutex<()>,
+    upload_seq: upload_gate::UploadSeq,
 }
 
 #[derive(Serialize)]
@@ -296,44 +298,50 @@ struct UploadResult {
     status: String,
 }
 
-fn do_upload(prefs: &config::Prefs) -> Result<UploadResult, core::UploadError> {
+fn do_upload(prefs: &config::Prefs) -> Result<upload_gate::SavedUpload, core::UploadError> {
     let token = match config::get_token() {
         Ok(Some(token)) => token,
         Ok(None) => return Err(core::UploadError::BadToken),
         Err(err) => return Err(core::UploadError::Network(err)),
     };
     let site = baked::site_url().map_err(|err| core::UploadError::Network(err))?;
-    let game = PathBuf::from(&prefs.game_folder);
-    let files = core::saved_variables(&game, &prefs.addon_name);
-    if files.is_empty() {
-        return Err(core::UploadError::Network(format!(
-            "No SavedVariables for {} yet. Log in with the addon, then /reload.",
-            prefs.addon_name
-        )));
-    }
-    let state_path = config::state_path(prefs);
-    let report = core::run(&files, &site, &token, &state_path)?;
-    let lines: Vec<String> = report
-        .results
-        .iter()
-        .map(|(_, outcome)| {
-            format!(
-                "{} {}",
-                outcome.ty.as_deref().unwrap_or("?"),
-                if outcome.ok { "accepted".to_string() } else { outcome.error.clone().unwrap_or_default() }
-            )
-        })
-        .collect();
-    let at = unix_now();
-    let accepted = report.results.iter().filter(|(_, outcome)| core::done(outcome)).count();
-    let status = if report.sent == 0 { "nothing new".into() } else { format!("sent {accepted}") };
-    Ok(UploadResult { found: report.found, sent: accepted, lines, at, status })
+    upload_gate::upload_saved_variables(&prefs.game_folder, &prefs.addon_name, &site, &token, &config::state_path(prefs))
 }
 
-fn unix_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    format!("{secs}")
+fn upload_result(upload: &upload_gate::SavedUpload) -> UploadResult {
+    UploadResult {
+        found: upload.found,
+        sent: upload.sent,
+        lines: upload.lines.clone(),
+        at: upload.at.clone(),
+        status: upload.status.clone(),
+    }
+}
+
+fn stored_result(prefs: &config::Prefs) -> UploadResult {
+    UploadResult {
+        found: 0,
+        sent: 0,
+        lines: prefs.last_sent_lines.clone().unwrap_or_default(),
+        at: prefs.last_upload_at.clone().unwrap_or_default(),
+        status: prefs.last_status.clone().unwrap_or_else(|| "nothing new".into()),
+    }
+}
+
+fn notice_ok(upload: &upload_gate::SavedUpload) -> WatchNotice {
+    WatchNotice {
+        ok: true,
+        found: upload.found,
+        sent: upload.sent,
+        lines: upload.lines.clone(),
+        at: upload.at.clone(),
+        status: upload.status.clone(),
+        error: String::new(),
+    }
+}
+
+fn notice_err(message: String) -> WatchNotice {
+    WatchNotice { ok: false, found: 0, sent: 0, lines: Vec::new(), at: String::new(), status: String::new(), error: message }
 }
 
 #[derive(Serialize)]
@@ -352,46 +360,28 @@ struct WatchNotice {
 /// the window is visible. Hiding the window does not stop this thread.
 fn perform_upload(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let prefs = state.prefs.lock().map_err(|e| e.to_string())?.clone();
-    let notice = match do_upload(&prefs) {
-        Ok(upload) => {
-            let mut prefs = state.prefs.lock().map_err(|e| e.to_string())?;
-            prefs.last_upload_at = Some(upload.at.clone());
-            prefs.last_status = Some(upload.status.clone());
-            prefs.last_sent_lines = Some(upload.lines.clone());
-            config::save_prefs(&prefs)?;
-            WatchNotice {
-                ok: true,
-                found: upload.found,
-                sent: upload.sent,
-                lines: upload.lines,
-                at: upload.at,
-                status: upload.status,
-                error: String::new(),
-            }
-        }
-        Err(err) if core::drops_saved_token(&err) => {
-            let _ = config::set_token("");
-            WatchNotice {
-                ok: false,
-                found: 0,
-                sent: 0,
-                lines: Vec::new(),
-                at: String::new(),
-                status: String::new(),
-                error: err.to_string(),
-            }
-        }
-        Err(err) => WatchNotice {
-            ok: false,
-            found: 0,
-            sent: 0,
-            lines: Vec::new(),
-            at: String::new(),
-            status: String::new(),
-            error: err.to_string(),
-        },
+    let (prefs, seq) = {
+        let prefs = state.prefs.lock().map_err(|e| e.to_string())?.clone();
+        (prefs, state.upload_seq.note_start())
     };
+    let result = do_upload(&prefs);
+    let step = {
+        let mut prefs = state.prefs.lock().map_err(|e| e.to_string())?;
+        match upload_gate::finish_upload(&mut prefs, &state.upload_seq, seq, result) {
+            upload_gate::Finish::Stale => None,
+            upload_gate::Finish::Applied(upload) => {
+                config::save_prefs(&prefs)?;
+                Some(notice_ok(&upload))
+            }
+            upload_gate::Finish::Failed { drop_token, message } => {
+                if drop_token {
+                    let _ = config::set_token("");
+                }
+                Some(notice_err(message))
+            }
+        }
+    };
+    let Some(notice) = step else { return Ok(()) };
     let failed = !notice.ok;
     let message = notice.error.clone();
     let _ = app.emit("sv-changed", &notice);
@@ -400,22 +390,24 @@ fn perform_upload(app: &AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 async fn upload_now(state: State<'_, AppState>) -> Result<UploadResult, String> {
-    let prefs = state.prefs.lock().map_err(|e| e.to_string())?.clone();
+    let (prefs, seq) = {
+        let prefs = state.prefs.lock().map_err(|e| e.to_string())?.clone();
+        (prefs, state.upload_seq.note_start())
+    };
     let result = tauri::async_runtime::spawn_blocking(move || do_upload(&prefs)).await.map_err(|e| e.to_string())?;
-    match result {
-        Ok(upload) => {
-            let mut prefs = state.prefs.lock().map_err(|e| e.to_string())?;
-            prefs.last_upload_at = Some(upload.at.clone());
-            prefs.last_status = Some(upload.status.clone());
-            prefs.last_sent_lines = Some(upload.lines.clone());
+    let mut prefs = state.prefs.lock().map_err(|e| e.to_string())?;
+    match upload_gate::finish_upload(&mut prefs, &state.upload_seq, seq, result) {
+        upload_gate::Finish::Applied(upload) => {
             config::save_prefs(&prefs)?;
-            Ok(upload)
+            Ok(upload_result(&upload))
         }
-        Err(err) if core::drops_saved_token(&err) => {
-            let _ = config::set_token("");
-            Err(err.to_string())
+        upload_gate::Finish::Stale => Ok(stored_result(&prefs)),
+        upload_gate::Finish::Failed { drop_token, message } => {
+            if drop_token {
+                let _ = config::set_token("");
+            }
+            Err(message)
         }
-        Err(err) => Err(err.to_string()),
     }
 }
 
@@ -558,7 +550,7 @@ async fn start_watch(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
         }
         for res in rx {
             if let Ok(events) = res {
-                if events.iter().any(|event| event.kind == DebouncedEventKind::Any) {
+                if upload_gate::debounced_change_should_upload(events.iter().map(|event| event.kind)) {
                     let _ = perform_upload(&app);
                 }
             }
@@ -676,6 +668,7 @@ pub fn run() {
             watching: Mutex::new(false),
             connect_cancel: Mutex::new(None),
             autostart_lock: Mutex::new(()),
+            upload_seq: upload_gate::UploadSeq::default(),
         })
         .invoke_handler(tauri::generate_handler![
             get_boot,

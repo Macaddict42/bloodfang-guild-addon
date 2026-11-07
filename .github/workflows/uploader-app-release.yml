@@ -57,6 +57,22 @@ jobs:
           export ADDON_NAME="${ADDON_NAME:-}"
           export GITHUB_REPO="${GITHUB_REPO:-$GITHUB_REPOSITORY}"
           cargo tauri build --bundles "${{ matrix.bundles }}" --target "${{ matrix.target }}"
+      - name: Windows installer hook and launcher smoke
+        if: matrix.os == 'windows-2022'
+        working-directory: uploader
+        run: |
+          set -euo pipefail
+          nsi=$(find target -name installer.nsi -path '*nsis*' | head -1)
+          echo "nsi=$nsi"
+          test -n "$nsi"
+          grep -F 'hooks.nsh' "$nsi"
+          installer=$(find target -path '*bundle*' -name '*.exe' ! -name '*uninstall*' | head -1)
+          echo "installer=$installer"
+          test -n "$installer"
+          exe=$(find target -path '*release/guild-uploader-app.exe' -type f | head -1)
+          echo "exe=$exe"
+          test -n "$exe"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$GITHUB_WORKSPACE/uploader/app/src-tauri/windows/launch-smoke.ps1" -Exe "$exe"
       - name: Collect artifacts
         run: |
           set -euo pipefail

@@ -412,6 +412,7 @@ $("btn-disconnect").addEventListener("click", async () => {
 });
 
 function showUploadSuccess(r) {
+  clearErr("upload-err");
   $("last-upload").textContent = formatUploadTime(r.at);
   const parts = linesApi().partitionUploadLines(r.lines);
   $("last-status").textContent = formatStatus(r.status, parts.accepted.length);

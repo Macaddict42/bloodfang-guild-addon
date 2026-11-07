@@ -1,0 +1,408 @@
+//! Shared upload result for the button, the tray, and the file watcher.
+//! The watcher calls this from its own thread. Nothing here listens for a UI event.
+
+use guild_uploader_core as core;
+use notify_debouncer_mini::DebouncedEventKind;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::config::Prefs;
+
+pub struct UploadSeq {
+    next: AtomicU64,
+    applied_success: AtomicU64,
+}
+
+impl Default for UploadSeq {
+    fn default() -> Self {
+        Self { next: AtomicU64::new(0), applied_success: AtomicU64::new(0) }
+    }
+}
+
+impl UploadSeq {
+    pub fn note_start(&self) -> u64 {
+        self.next.fetch_add(1, Ordering::SeqCst) + 1
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedUpload {
+    pub found: usize,
+    pub sent: usize,
+    pub lines: Vec<String>,
+    pub at: String,
+    pub status: String,
+}
+
+#[derive(Debug)]
+pub enum Finish {
+    Applied(SavedUpload),
+    /// A newer successful upload already wrote the prefs. Leave them alone.
+    Stale,
+    Failed { drop_token: bool, message: String },
+}
+
+/// A settled file change is worth an upload. Continuous writes are not a second trigger.
+/// Window visibility is not an input.
+pub fn debounced_change_should_upload(kinds: impl IntoIterator<Item = DebouncedEventKind>) -> bool {
+    kinds.into_iter().any(|kind| kind == DebouncedEventKind::Any)
+}
+
+pub fn upload_saved_variables(
+    game_folder: &str,
+    addon_name: &str,
+    site: &str,
+    token: &str,
+    state_path: &Path,
+) -> Result<SavedUpload, core::UploadError> {
+    let files = core::saved_variables(&PathBuf::from(game_folder), addon_name);
+    if files.is_empty() {
+        return Err(core::UploadError::Network(format!(
+            "No SavedVariables for {addon_name} yet. Log in with the addon, then /reload."
+        )));
+    }
+    Ok(saved_from_report(core::run(&files, site, token, state_path)?))
+}
+
+pub fn saved_from_report(report: core::Report) -> SavedUpload {
+    let lines: Vec<String> = report
+        .results
+        .iter()
+        .map(|(_, outcome)| {
+            format!(
+                "{} {}",
+                outcome.ty.as_deref().unwrap_or("?"),
+                if outcome.ok { "accepted".to_string() } else { outcome.error.clone().unwrap_or_default() }
+            )
+        })
+        .collect();
+    let accepted = report.results.iter().filter(|(_, outcome)| core::done(outcome)).count();
+    let status = if report.sent == 0 { "nothing new".into() } else { format!("sent {accepted}") };
+    SavedUpload {
+        found: report.found,
+        sent: accepted,
+        lines,
+        at: unix_now(),
+        status,
+    }
+}
+
+/// Apply one finished upload. Callers hold the prefs lock for the whole call so the
+/// status, time, and lines stay one record. An older success cannot replace a newer one.
+/// A failure does not rewrite a stored success. A bad token drops the saved token only
+/// when no newer success has already been kept.
+pub fn finish_upload(prefs: &mut Prefs, seq: &UploadSeq, started: u64, result: Result<SavedUpload, core::UploadError>) -> Finish {
+    let applied = seq.applied_success.load(Ordering::SeqCst);
+    if started < applied {
+        return Finish::Stale;
+    }
+    match result {
+        Ok(upload) => {
+            prefs.last_upload_at = Some(upload.at.clone());
+            prefs.last_status = Some(upload.status.clone());
+            prefs.last_sent_lines = Some(upload.lines.clone());
+            seq.applied_success.store(started, Ordering::SeqCst);
+            Finish::Applied(upload)
+        }
+        Err(err) => Finish::Failed {
+            drop_token: core::drops_saved_token(&err),
+            message: err.to_string(),
+        },
+    }
+}
+
+fn unix_now() -> String {
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    format!("{secs}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    fn prefs_with_success() -> Prefs {
+        Prefs {
+            game_folder: "C:\\Games\\Wow\\_forever_".into(),
+            addon_name: "Addon".into(),
+            start_at_login: true,
+            last_upload_at: Some("100".into()),
+            last_status: Some("sent 2".into()),
+            last_sent_lines: Some(vec!["recipes accepted".into(), "gbank accepted".into()]),
+            ..Prefs::default()
+        }
+    }
+
+    fn saved(status: &str, lines: &[&str]) -> SavedUpload {
+        SavedUpload {
+            found: lines.len(),
+            sent: 1,
+            lines: lines.iter().map(|s| (*s).to_string()).collect(),
+            at: "200".into(),
+            status: status.into(),
+        }
+    }
+
+    #[test]
+    fn settled_change_uploads_and_a_continuous_write_does_not() {
+        assert!(debounced_change_should_upload([DebouncedEventKind::Any]));
+        assert!(!debounced_change_should_upload([DebouncedEventKind::AnyContinuous]));
+        assert!(!debounced_change_should_upload([]));
+    }
+
+    #[test]
+    fn newer_success_wins_whichever_thread_locks_first() {
+        let seq = UploadSeq::default();
+        let older = seq.note_start();
+        let newer = seq.note_start();
+        let prefs = Arc::new(Mutex::new(Prefs::default()));
+        let seq = Arc::new(seq);
+        thread::scope(|scope| {
+            let prefs_b = Arc::clone(&prefs);
+            let seq_b = Arc::clone(&seq);
+            scope.spawn(move || {
+                let mut prefs = prefs_b.lock().unwrap();
+                let finish = finish_upload(&mut prefs, &seq_b, newer, Ok(saved("sent 9", &["gbank accepted"])));
+                assert!(matches!(finish, Finish::Applied(_)));
+            });
+            let prefs_a = Arc::clone(&prefs);
+            let seq_a = Arc::clone(&seq);
+            scope.spawn(move || {
+                let mut prefs = prefs_a.lock().unwrap();
+                let _ = finish_upload(&mut prefs, &seq_a, older, Ok(saved("sent 1", &["recipes accepted"])));
+            });
+        });
+        let prefs = prefs.lock().unwrap();
+        assert_eq!(prefs.last_status.as_deref(), Some("sent 9"));
+        assert_eq!(prefs.last_sent_lines.as_deref(), Some(["gbank accepted".to_string()].as_slice()));
+        assert_eq!(prefs.last_upload_at.as_deref(), Some("200"));
+    }
+
+    #[test]
+    fn stale_failure_does_not_drop_the_token_or_rewrite_a_newer_success() {
+        let seq = UploadSeq::default();
+        let older = seq.note_start();
+        let newer = seq.note_start();
+        let mut prefs = prefs_with_success();
+        let applied = finish_upload(&mut prefs, &seq, newer, Ok(saved("sent 4", &["recipes accepted"])));
+        assert!(matches!(applied, Finish::Applied(_)));
+        let stale = finish_upload(&mut prefs, &seq, older, Err(core::UploadError::BadToken));
+        assert!(matches!(stale, Finish::Stale));
+        assert_eq!(prefs.last_status.as_deref(), Some("sent 4"));
+        assert_eq!(prefs.last_sent_lines.as_deref(), Some(["recipes accepted".to_string()].as_slice()));
+        assert!(prefs.start_at_login);
+        assert_eq!(prefs.game_folder, "C:\\Games\\Wow\\_forever_");
+    }
+
+    #[test]
+    fn bad_token_keeps_the_last_success_and_asks_to_drop_the_token() {
+        let seq = UploadSeq::default();
+        let started = seq.note_start();
+        let mut prefs = prefs_with_success();
+        let finish = finish_upload(&mut prefs, &seq, started, Err(core::UploadError::BadToken));
+        match finish {
+            Finish::Failed { drop_token, message } => {
+                assert!(drop_token);
+                assert!(message.contains("rejected the uploader token"));
+                assert!(!message.contains("upl_"));
+            }
+            other => panic!("expected token drop, got {other:?}"),
+        }
+        assert_eq!(prefs.last_status.as_deref(), Some("sent 2"));
+        assert_eq!(
+            prefs.last_sent_lines.as_deref(),
+            Some(["recipes accepted".to_string(), "gbank accepted".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn other_failure_does_not_drop_the_token_or_clear_a_success() {
+        let seq = UploadSeq::default();
+        let started = seq.note_start();
+        let mut prefs = prefs_with_success();
+        let finish = finish_upload(
+            &mut prefs,
+            &seq,
+            started,
+            Err(core::UploadError::Http(403, "forbidden".into())),
+        );
+        match finish {
+            Finish::Failed { drop_token, message } => {
+                assert!(!drop_token);
+                assert!(message.contains("403"));
+            }
+            other => panic!("expected ordinary failure, got {other:?}"),
+        }
+        assert_eq!(prefs.last_status.as_deref(), Some("sent 2"));
+    }
+
+    #[test]
+    fn per_string_refusal_is_stored_and_keeps_the_token() {
+        let seq = UploadSeq::default();
+        let started = seq.note_start();
+        let mut prefs = prefs_with_success();
+        let upload = saved("sent 1", &["gbank site_refused", "recipes accepted"]);
+        let finish = finish_upload(&mut prefs, &seq, started, Ok(upload));
+        match finish {
+            Finish::Applied(saved) => {
+                assert_eq!(saved.status, "sent 1");
+                assert!(saved.lines.iter().any(|line| line.contains("site_refused")));
+            }
+            other => panic!("expected stored refusal, got {other:?}"),
+        }
+        assert_eq!(prefs.last_status.as_deref(), Some("sent 1"));
+        assert!(prefs.last_sent_lines.as_ref().unwrap().iter().any(|line| line == "recipes accepted"));
+    }
+
+    struct Fixture {
+        site: String,
+        seen: std::sync::mpsc::Receiver<String>,
+    }
+
+    fn serve(status: u16, body: &'static str) -> Fixture {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            sock.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 2048];
+            loop {
+                match sock.read(&mut tmp) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&tmp[..n]);
+                        if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let headers = String::from_utf8_lossy(&buf[..end]);
+                            let len = headers
+                                .lines()
+                                .find_map(|line| {
+                                    let rest = line.split_once(':')?;
+                                    if rest.0.eq_ignore_ascii_case("content-length") {
+                                        rest.1.trim().parse::<usize>().ok()
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or(0);
+                            if buf.len() >= end + 4 + len {
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = tx.send(String::from_utf8_lossy(&buf).to_string());
+            let resp = format!(
+                "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(resp.as_bytes());
+        });
+        Fixture { site: format!("http://127.0.0.1:{port}"), seen: rx }
+    }
+
+    fn write_saved(dir: &Path, lua: &str) {
+        let file = dir.join("WTF").join("Account").join("Test").join("SavedVariables").join("Addon.lua");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, lua).unwrap();
+    }
+
+    #[test]
+    fn file_change_posts_and_stores_without_a_ui_listener() {
+        let dir = std::env::temp_dir().join(format!("gu-watch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        write_saved(&dir, "x = \"!BF:recipes:v1:Ab9\"\n");
+        let state = std::env::temp_dir().join(format!("gu-watch-state-{}.json", std::process::id()));
+        let _ = fs::remove_file(&state);
+        let fixture = serve(200, r#"{"results":[{"type":"recipes","ok":true}]}"#);
+        assert!(debounced_change_should_upload([DebouncedEventKind::Any]));
+        let uploaded = upload_saved_variables(
+            &dir.display().to_string(),
+            "Addon",
+            &fixture.site,
+            "upl_fixture_not_secret",
+            &state,
+        )
+        .unwrap();
+        let request = fixture.seen.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(request.starts_with("POST /api/uploader/ingest "));
+        assert!(request.contains("upl_fixture_not_secret"));
+        assert!(request.contains("!BF:recipes:v1:Ab9"));
+        let seq = UploadSeq::default();
+        let started = seq.note_start();
+        let mut prefs = Prefs { game_folder: dir.display().to_string(), addon_name: "Addon".into(), ..Prefs::default() };
+        let finish = finish_upload(&mut prefs, &seq, started, Ok(uploaded));
+        assert!(matches!(finish, Finish::Applied(_)));
+        assert_eq!(prefs.last_status.as_deref(), Some("sent 1"));
+        assert_eq!(prefs.last_sent_lines.as_deref(), Some(["recipes accepted".to_string()].as_slice()));
+        let stored = core::State::load(&state);
+        assert!(stored.sent.contains(&core::digest("!BF:recipes:v1:Ab9")));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_file(&state);
+    }
+
+    #[test]
+    fn per_string_http_refusal_stays_unfinished_and_keeps_the_token_decision() {
+        let dir = std::env::temp_dir().join(format!("gu-mixed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        write_saved(&dir, "a = \"!BF:gbank:v1:Ab9\"\nb = \"!BF:recipes:v1:Cd8\"\n");
+        let state = std::env::temp_dir().join(format!("gu-mixed-state-{}.json", std::process::id()));
+        let _ = fs::remove_file(&state);
+        let fixture = serve(
+            200,
+            r#"{"results":[{"type":"gbank","ok":false,"error":"site_refused"},{"type":"recipes","ok":true}]}"#,
+        );
+        let uploaded = upload_saved_variables(&dir.display().to_string(), "Addon", &fixture.site, "upl_fixture_not_secret", &state).unwrap();
+        assert_eq!(uploaded.status, "sent 1");
+        assert!(uploaded.lines.iter().any(|line| line == "gbank site_refused"));
+        assert!(uploaded.lines.iter().any(|line| line == "recipes accepted"));
+        let seq = UploadSeq::default();
+        let started = seq.note_start();
+        let mut prefs = prefs_with_success();
+        let finish = finish_upload(&mut prefs, &seq, started, Ok(uploaded));
+        assert!(matches!(finish, Finish::Applied(_)));
+        assert_eq!(prefs.last_status.as_deref(), Some("sent 1"));
+        let stored = core::State::load(&state);
+        assert!(stored.sent.contains(&core::digest("!BF:recipes:v1:Cd8")));
+        assert!(!stored.sent.contains(&core::digest("!BF:gbank:v1:Ab9")));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_file(&state);
+    }
+
+    #[test]
+    fn http_bad_token_does_not_replace_the_last_success() {
+        let dir = std::env::temp_dir().join(format!("gu-token-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        write_saved(&dir, "a = \"!BF:recipes:v1:Ab9\"\n");
+        let state = std::env::temp_dir().join(format!("gu-token-state-{}.json", std::process::id()));
+        let _ = fs::remove_file(&state);
+        let fixture = serve(401, r#"{"error":"bad_token","token":"upl_fixture_not_secret"}"#);
+        let err = upload_saved_variables(&dir.display().to_string(), "Addon", &fixture.site, "upl_fixture_not_secret", &state).unwrap_err();
+        assert!(core::drops_saved_token(&err));
+        assert!(!err.to_string().contains("upl_fixture_not_secret"));
+        let seq = UploadSeq::default();
+        let started = seq.note_start();
+        let mut prefs = prefs_with_success();
+        let finish = finish_upload(&mut prefs, &seq, started, Err(err));
+        match finish {
+            Finish::Failed { drop_token, .. } => assert!(drop_token),
+            other => panic!("expected drop, got {other:?}"),
+        }
+        assert_eq!(prefs.last_status.as_deref(), Some("sent 2"));
+        assert_eq!(
+            prefs.last_sent_lines.as_deref(),
+            Some(["recipes accepted".to_string(), "gbank accepted".to_string()].as_slice())
+        );
+        assert!(core::State::load(&state).sent.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_file(&state);
+    }
+}
