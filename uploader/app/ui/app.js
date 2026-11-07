@@ -158,46 +158,30 @@ function setAddonUi(state, check) {
   addonUiState = state;
   lastAddonCheck = check || lastAddonCheck;
   const c = lastAddonCheck;
-  $("addon-banner").hidden = true;
-  $("addon-state").hidden = true;
-  $("addon-err").hidden = true;
-  $("addon-actions").hidden = false;
-  const busy = state === "updating";
-  $("btn-check").disabled = busy;
-  $("btn-upload").disabled = busy;
-  $("btn-addon-update").disabled = busy;
-  $("btn-addon-later").disabled = busy;
-  $("btn-addon-skip").disabled = busy;
-
+  $("addon-err").hidden = state !== "failed";
   if (c) {
     $("addon-installed").textContent = c.installed || "not installed";
     $("addon-latest").textContent = c.latest || "—";
     $("addon-ver").textContent = c.installed || "—";
     $("addon-warn").hidden = !c.gameRunning;
   }
-
-  if (state === "updating") {
-    $("addon-state").textContent = "Updating…";
-    $("addon-state").className = "note";
-    $("addon-state").hidden = false;
-    return;
-  }
-  if (state === "failed") return;
-  if (state === "available" && c?.updateAvailable) {
-    $("addon-banner-body").textContent = `Install ${c.latest} now? Takes effect after the next game start or /reload.`;
-    $("addon-banner").hidden = false;
-    $("addon-actions").hidden = true;
-    return;
-  }
-  if (state === "deferred") {
-    $("addon-state").textContent = "Update deferred. Check again when ready.";
-    $("addon-state").className = "note";
-    $("addon-state").hidden = false;
-    return;
-  }
-  $("addon-state").textContent = c?.latest ? "Up to date." : "Couldn't check for an addon update.";
-  $("addon-state").className = "note";
+  let text = "Checking the addon…";
+  if (state === "updating") text = "Updating the addon…";
+  else if (state === "failed") text = "The addon update did not finish.";
+  else if (c?.gameRunning && c?.updateAvailable) text = "Game is running. The addon update will wait until it closes.";
+  else if (c?.latest) text = "Up to date.";
+  else text = "Couldn't check for an addon update.";
+  $("addon-state").textContent = text;
   $("addon-state").hidden = false;
+}
+
+let lastAppOffer = null;
+
+function applyAppOffer(check) {
+  lastAppOffer = check || null;
+  const showOffer = check?.offer === true;
+  $("app-update").hidden = !showOffer;
+  if (showOffer) $("app-update-note").hidden = true;
 }
 
 function maybeMain() {
@@ -206,12 +190,14 @@ function maybeMain() {
     setState("main");
     invoke("start_watch").catch(() => {});
     invoke("check_addon").then((c) => {
-      if (c.updateAvailable) setAddonUi("available", c);
+      if (c.gameRunning && c.updateAvailable) setAddonUi("deferred", c);
+      else if (c.updateAvailable) setAddonUi("updating", c);
       else setAddonUi("uptodate", c);
     }).catch((e) => {
       setAddonUi("failed", lastAddonCheck);
       showErr("addon-err", "addon-err-msg", e);
     });
+    invoke("check_self_update").then(applyAppOffer).catch(() => applyAppOffer(null));
     invoke("game_running").then((g) => {
       if (lastAddonCheck) lastAddonCheck.gameRunning = !!g.running;
       $("addon-warn").hidden = !g.running;
@@ -440,62 +426,49 @@ function showUploadFailure(message) {
   }
 }
 
-$("btn-upload").addEventListener("click", async () => {
-  clearErr("upload-err");
-  $("upload-ok").hidden = true;
-  $("btn-upload").disabled = true;
+$("btn-app-later").addEventListener("click", async () => {
+  const version = lastAppOffer?.latest;
+  if (!version) return;
   try {
-    showUploadSuccess(await invoke("upload_now"));
+    await invoke("defer_app_update", { version });
+    $("app-update").hidden = true;
+    $("app-update-note").hidden = true;
   } catch (e) {
-    showUploadFailure(e);
+    $("app-update-note").hidden = false;
+    $("app-update-note").textContent = String(e);
+  }
+});
+
+$("btn-app-update").addEventListener("click", async () => {
+  $("btn-app-update").disabled = true;
+  try {
+    const result = await invoke("accept_app_update");
+    $("app-update-note").hidden = false;
+    $("app-update-note").textContent = result?.message || "Nothing was downloaded or restarted.";
+  } catch (e) {
+    $("app-update-note").hidden = false;
+    $("app-update-note").textContent = String(e);
   } finally {
-    if (addonUiState !== "updating") $("btn-upload").disabled = false;
+    $("btn-app-update").disabled = false;
   }
 });
 
-$("btn-check").addEventListener("click", async () => {
-  clearErr("addon-err");
-  try {
-    const c = await invoke("check_addon");
-    if (c.updateAvailable) setAddonUi("available", c);
-    else setAddonUi("uptodate", c);
-  } catch (e) {
-    setAddonUi("failed", lastAddonCheck);
-    showErr("addon-err", "addon-err-msg", e);
-  }
-});
-
-async function runAddonUpdate() {
-  clearErr("addon-err");
-  setAddonUi("updating", lastAddonCheck);
-  try {
-    const ver = await invoke("update_addon");
-    const c = await invoke("check_addon");
-    setAddonUi(c.updateAvailable ? "available" : "uptodate", c);
-    $("addon-state").textContent = `Installed ${ver}.`;
-    $("addon-state").className = "note ok";
+listen("addon-auto", (event) => {
+  const r = event?.payload;
+  if (!r) return;
+  setAddonUi(r.ok ? "uptodate" : "failed", {
+    installed: r.installed,
+    latest: r.latest,
+    updateAvailable: false,
+    gameRunning: !!r.gameRunning,
+  });
+  if (r.message) {
+    $("addon-state").textContent = r.message;
     $("addon-state").hidden = false;
-  } catch (e) {
-    setAddonUi("failed", lastAddonCheck);
-    showErr("addon-err", "addon-err-msg", e);
   }
-}
-
-$("btn-addon-update").addEventListener("click", () => runAddonUpdate());
-$("btn-addon-later").addEventListener("click", () => setAddonUi("deferred", lastAddonCheck));
-$("btn-addon-skip").addEventListener("click", async () => {
-  clearErr("addon-err");
-  try {
-    const ver = lastAddonCheck?.latest;
-    if (ver) await invoke("skip_addon_version", { version: ver });
-    const c = await invoke("check_addon");
-    setAddonUi(c.updateAvailable ? "available" : "uptodate", c);
-  } catch (e) {
-    setAddonUi("failed", lastAddonCheck);
-    showErr("addon-err", "addon-err-msg", e);
-  }
+  if (!r.ok) showErr("addon-err", "addon-err-msg", r.message, "Update failed");
+  else clearErr("addon-err");
 });
-
 listen("sv-changed", (event) => {
   const r = event?.payload;
   if (!r || typeof r !== "object" || !("ok" in r)) return;
@@ -552,8 +525,8 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
     mock.prefs.gameFolder = mock.folder;
     mock.prefs.setupDone = true;
   }
-  if (screen === "main" || screen === "denied" || screen === "expired" || screen === "cancelled" || screen === "retry" || screen === "waiting" || screen === "offline" || screen === "recovery") {
-    mock.hasToken = screen === "main";
+  if (screen === "main" || screen === "app-update" || screen === "addon-busy" || screen === "denied" || screen === "expired" || screen === "cancelled" || screen === "retry" || screen === "waiting" || screen === "offline" || screen === "recovery") {
+    mock.hasToken = screen === "main" || screen === "app-update" || screen === "addon-busy";
     mock.tokenState = mock.hasToken ? "present" : "absent";
     mock.folder = os === "mac" ? macChoices[0] : winFolder;
     mock.prefs.gameFolder = mock.folder;
@@ -561,7 +534,8 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
     mock.prefs.lastUploadAt = "1762254000";
     mock.prefs.lastStatus = "sent 2";
     mock.prefs.lastSentLines = ["gbank accepted", "recipes accepted"];
-    mock.addonInstalled = "0.1.1";
+    mock.addonInstalled = screen === "addon-busy" ? "0.1.1" : "0.1.2";
+    mock._forceUpdate = false;
   }
   if (screen === "folder" || screen === "mac-choices") {
     mock.folder = null;
@@ -651,8 +625,8 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
             installed,
             latest,
             tag: `addon-v${latest}`,
-            updateAvailable: mock._forceUpdate === true && installed !== latest,
-            gameRunning: false,
+            updateAvailable: screen === "addon-busy" || (mock._forceUpdate === true && installed !== latest),
+            gameRunning: screen === "addon-busy",
           };
         }
         if (cmd === "game_running") return { running: !!mock.gameRunning };
@@ -666,7 +640,14 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
           return null;
         }
         if (cmd === "start_watch") return null;
-        if (cmd === "check_self_update") return { current: "0.1.0", latest: "0.1.0", updateAvailable: false };
+        if (cmd === "check_self_update") {
+          if (screen === "app-update") return { current: "0.1.0", latest: "0.2.0", updateAvailable: true, offer: true };
+          return { current: "0.1.0", latest: "0.1.0", updateAvailable: false, offer: false };
+        }
+        if (cmd === "defer_app_update") return null;
+        if (cmd === "accept_app_update") {
+          return { installed: false, message: "This build can't install an app update. No verified installer is published, so nothing was downloaded or restarted." };
+        }
         throw new Error("unknown " + cmd);
       },
     },

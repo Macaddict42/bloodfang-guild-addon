@@ -47,7 +47,16 @@
     </section>
 
     <section id="screen-main" class="screen hidden" aria-label="Status">
+      <div id="app-update" class="banner" role="dialog" aria-label="App update" hidden>
+        <p id="app-update-copy">A new update is available. Would you like to update now?</p>
+        <div class="row">
+          <button type="button" id="btn-app-update" class="primary">Update now</button>
+          <button type="button" id="btn-app-later" class="secondary">Later</button>
+        </div>
+        <p id="app-update-note" class="note" hidden></p>
+      </div>
       <h2>Upload</h2>
+      <p class="hint">Saved scans upload on their own.</p>
       <dl class="status">
         <div><dt>Last upload</dt><dd id="last-upload">Never</dd></div>
         <div><dt>Status</dt><dd id="last-status">Waiting for SavedVariables</dd></div>
@@ -65,36 +74,23 @@
       <p id="folder-main" class="detail" hidden><span class="lbl">Game folder</span><span id="folder-main-body"></span></p>
       <label class="check"><input id="start-login-main" type="checkbox" /> Start at login</label>
       <div class="actions">
-        <button type="button" id="btn-upload" class="primary">Upload now</button>
         <button type="button" id="btn-change-folder" class="secondary">Change folder</button>
         <button type="button" id="btn-disconnect" class="secondary">Sign out</button>
       </div>
 
-      <h2 class="mt">Addon update</h2>
+      <h2 class="mt">Addon</h2>
       <dl class="status">
         <div><dt>Installed</dt><dd id="addon-installed">—</dd></div>
         <div><dt>Latest</dt><dd id="addon-latest">—</dd></div>
       </dl>
       <p id="addon-warn" class="warn" hidden>Game looks running — changes take effect after /reload.</p>
       <p id="addon-state" class="note" hidden></p>
-      <div id="addon-banner" class="banner" role="region" aria-label="Update available" hidden>
-        <strong>Update available</strong>
-        <span id="addon-banner-body"></span>
-        <div class="row">
-          <button type="button" id="btn-addon-update" class="primary">Update</button>
-          <button type="button" id="btn-addon-later" class="secondary">Later</button>
-          <button type="button" id="btn-addon-skip" class="secondary">Skip this version</button>
-        </div>
-      </div>
       <div id="addon-err" class="err" role="alert" hidden>
         <i aria-hidden="true"></i>
         <div>
           <strong>Update failed</strong>
           <span id="addon-err-msg"></span>
         </div>
-      </div>
-      <div id="addon-actions" class="actions">
-        <button type="button" id="btn-check" class="secondary">Check for update</button>
       </div>
     </section>
   </div>

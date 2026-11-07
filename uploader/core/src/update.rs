@@ -171,12 +171,22 @@ pub fn install_addon(rel: &AddonRelease, game_dir: &Path, addon_name: &str, atte
     Ok(rel.version.to_string())
 }
 
+fn zip_name_stays_inside(name: &Path) -> bool {
+    !name.as_os_str().is_empty()
+        && !name.is_absolute()
+        && name.components().all(|c| matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir))
+}
+
 fn unpack_zip(bytes: &[u8], dest: &Path) -> Result<(), String> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
-        let name = file.mangled_name();
-        let out = dest.join(&name);
+        let raw_name = file.name().to_string();
+        let name = Path::new(&raw_name);
+        if !zip_name_stays_inside(name) {
+            return Err("addon archive tried to leave the addon folder".into());
+        }
+        let out = dest.join(name);
         if file.is_dir() {
             fs::create_dir_all(&out).map_err(|e| e.to_string())?;
         } else {
@@ -290,6 +300,24 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
     use std::io::Write;
+
+    #[test]
+    fn zip_parent_dir_is_rejected() {
+        use std::io::Write;
+        use zip::write::FileOptions;
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            writer.start_file("../outside.txt", FileOptions::default()).unwrap();
+            writer.write_all(b"no").unwrap();
+            writer.finish().unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let err = unpack_zip(cursor.get_ref(), dir.path()).unwrap_err();
+        assert!(err.contains("leave the addon folder"));
+        assert!(!dir.path().join("outside.txt").exists());
+        assert!(!dir.path().parent().unwrap().join("outside.txt").exists());
+    }
 
     #[test]
     fn sums_parse() {

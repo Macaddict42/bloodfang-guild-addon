@@ -1,3 +1,5 @@
+mod addon_auto;
+mod app_update;
 mod autostart;
 mod baked;
 mod config;
@@ -25,6 +27,7 @@ struct AppState {
     connect_cancel: Mutex<Option<Arc<AtomicBool>>>,
     autostart_lock: Mutex<()>,
     upload_seq: upload_gate::UploadSeq,
+    upload_flight: upload_gate::Flight,
 }
 
 #[derive(Serialize)]
@@ -360,11 +363,34 @@ struct WatchNotice {
 /// the window is visible. Hiding the window does not stop this thread.
 fn perform_upload(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
+    if !state.upload_flight.acquire() {
+        return Ok(());
+    }
+    loop {
+        let outcome = upload_once(app);
+        if !state.upload_flight.take_repeat() {
+            return outcome;
+        }
+    }
+}
+
+fn upload_once(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
     let (prefs, seq) = {
         let prefs = state.prefs.lock().map_err(|e| e.to_string())?.clone();
         (prefs, state.upload_seq.note_start())
     };
-    let result = do_upload(&prefs);
+    let mut attempt = 0;
+    let result = loop {
+        match do_upload(&prefs) {
+            Ok(upload) => break Ok(upload),
+            Err(err) if upload_gate::transient_retry(&err, attempt) => {
+                attempt += 1;
+                std::thread::sleep(upload_gate::retry_pause(attempt));
+            }
+            Err(err) => break Err(err),
+        }
+    };
     let step = {
         let mut prefs = state.prefs.lock().map_err(|e| e.to_string())?;
         match upload_gate::finish_upload(&mut prefs, &state.upload_seq, seq, result) {
@@ -455,7 +481,8 @@ async fn check_addon(state: State<'_, AppState>) -> Result<AddonCheck, String> {
                 }
             }
         }
-        Ok(AddonCheck { installed, latest: ver, tag, update_available, game_running: false })
+        let game_running = core::game_seems_running();
+        Ok(AddonCheck { installed, latest: ver, tag, update_available, game_running })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -519,8 +546,10 @@ async fn start_watch(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
         *flag = true;
     }
     let prefs = state.prefs.lock().map_err(|e| e.to_string())?.clone();
+    let listed_folder = prefs.game_folder.clone();
+    let listed_addon = prefs.addon_name.clone();
     let listed = tauri::async_runtime::spawn_blocking(move || {
-        core::saved_variables(&PathBuf::from(&prefs.game_folder), &prefs.addon_name)
+        core::saved_variables(&PathBuf::from(&listed_folder), &listed_addon)
     })
     .await;
     let files = match listed {
@@ -532,21 +561,30 @@ async fn start_watch(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
             return Err(err.to_string());
         }
     };
-    if files.is_empty() {
+    let game = PathBuf::from(&prefs.game_folder);
+    let watch_paths = if files.is_empty() { saved_variable_dirs(&game) } else { files.clone() };
+    if watch_paths.is_empty() {
         let mut flag = state.watching.lock().map_err(|e| e.to_string())?;
         *flag = false;
         return Ok(());
     }
+    let backlog = !files.is_empty();
+    let app_for_addon = app.clone();
     std::thread::spawn(move || {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut debouncer = new_debouncer(Duration::from_millis(1500), tx).ok();
         if let Some(debouncer) = debouncer.as_mut() {
-            for file in &files {
-                let _ = debouncer.watcher().watch(file, notify::RecursiveMode::NonRecursive);
-                if let Some(parent) = file.parent() {
-                    let _ = debouncer.watcher().watch(parent, notify::RecursiveMode::NonRecursive);
+            for path in &watch_paths {
+                let _ = debouncer.watcher().watch(path, notify::RecursiveMode::NonRecursive);
+                if path.is_file() {
+                    if let Some(parent) = path.parent() {
+                        let _ = debouncer.watcher().watch(parent, notify::RecursiveMode::NonRecursive);
+                    }
                 }
             }
+        }
+        if backlog {
+            let _ = perform_upload(&app);
         }
         for res in rx {
             if let Ok(events) = res {
@@ -556,7 +594,161 @@ async fn start_watch(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
             }
         }
     });
+    spawn_addon_auto(app_for_addon);
     Ok(())
+}
+
+fn saved_variable_dirs(game: &std::path::Path) -> Vec<PathBuf> {
+    let accounts = game.join("WTF").join("Account");
+    let mut dirs = Vec::new();
+    if let Ok(read) = std::fs::read_dir(accounts) {
+        for entry in read.flatten() {
+            let saved = entry.path().join("SavedVariables");
+            if saved.is_dir() {
+                dirs.push(saved);
+            }
+        }
+    }
+    dirs
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AddonAutoNotice {
+    ok: bool,
+    retry: bool,
+    game_running: bool,
+    installed: String,
+    latest: String,
+    message: String,
+}
+
+fn spawn_addon_auto(app: AppHandle) {
+    std::thread::spawn(move || {
+        let first = addon_auto_once(&app);
+        let retry_network = first.retry;
+        let wait_for_game = first.message.starts_with("Game is running");
+        let _ = app.emit("addon-auto", &first);
+        if retry_network {
+            std::thread::sleep(Duration::from_millis(400));
+            let _ = app.emit("addon-auto", &addon_auto_once(&app));
+        } else if wait_for_game {
+            std::thread::sleep(Duration::from_secs(20));
+            let _ = app.emit("addon-auto", &addon_auto_once(&app));
+        }
+    });
+}
+
+fn addon_auto_once(app: &AppHandle) -> AddonAutoNotice {
+    let state = app.state::<AppState>();
+    let prefs = match state.prefs.lock() {
+        Ok(prefs) => prefs.clone(),
+        Err(err) => {
+            return AddonAutoNotice {
+                ok: false,
+                retry: false,
+                game_running: false,
+                installed: String::new(),
+                latest: String::new(),
+                message: err.to_string(),
+            }
+        }
+    };
+    let repo = defaults_repo();
+    let game_running = core::game_seems_running();
+    let latest = if repo.is_empty() { Ok(None) } else { core::latest_addon(&repo, &prefs.addon_name) };
+    let (latest_ver, release) = match latest {
+        Ok(release) => {
+            let ver = release.as_ref().map(|item| item.version.to_string()).unwrap_or_default();
+            (ver, release)
+        }
+        Err(err) => {
+            return AddonAutoNotice {
+                ok: false,
+                retry: true,
+                game_running,
+                installed: prefs.last_addon_version.clone().unwrap_or_default(),
+                latest: String::new(),
+                message: err.to_string(),
+            }
+        }
+    };
+    let installed = if prefs.game_folder.is_empty() {
+        None
+    } else {
+        core::installed_version(&core::addons_dir(PathBuf::from(&prefs.game_folder).as_path()), &prefs.addon_name).map(|v| v.to_string())
+    };
+    let update_available = match (&installed, &release) {
+        (Some(installed), Some(release)) => semver_gt(&release.version.to_string(), installed),
+        (None, Some(_)) => true,
+        _ => false,
+    };
+    let skipped = prefs.skipped_addon_version.as_deref() == Some(latest_ver.as_str()) && !latest_ver.is_empty();
+    let step = addon_auto::addon_auto_step(update_available, game_running, skipped);
+    let installed_text = installed.clone().unwrap_or_default();
+    match step {
+        addon_auto::AddonAuto::Current => AddonAutoNotice {
+            ok: true,
+            retry: false,
+            game_running,
+            installed: installed_text,
+            latest: latest_ver.clone(),
+            message: if latest_ver.is_empty() { "Couldn't check for an addon update.".into() } else { "Up to date.".into() },
+        },
+        addon_auto::AddonAuto::KeepSkipped => AddonAutoNotice {
+            ok: true,
+            retry: false,
+            game_running,
+            installed: installed_text,
+            latest: latest_ver,
+            message: "This addon version was set aside earlier. It stays as it is.".into(),
+        },
+        addon_auto::AddonAuto::WaitForGame => AddonAutoNotice {
+            ok: true,
+            retry: true,
+            game_running: true,
+            installed: installed_text,
+            latest: latest_ver,
+            message: "Game is running. The addon update will wait until it closes.".into(),
+        },
+        addon_auto::AddonAuto::Install => {
+            let Some(release) = release else {
+                return AddonAutoNotice {
+                    ok: true,
+                    retry: false,
+                    game_running,
+                    installed: installed_text,
+                    latest: latest_ver,
+                    message: "Up to date.".into(),
+                };
+            };
+            match core::install_addon(&release, PathBuf::from(&prefs.game_folder).as_path(), &prefs.addon_name, Some(&repo)) {
+                Ok(version) => {
+                    if let Ok(mut prefs) = state.prefs.lock() {
+                        prefs.last_addon_version = Some(version.clone());
+                        prefs.skipped_addon_version = None;
+                        let _ = config::save_prefs(&prefs);
+                    }
+                    AddonAutoNotice {
+                        ok: true,
+                        retry: false,
+                        game_running,
+                        installed: version.clone(),
+                        latest: version,
+                        message: format!("Installed {latest_ver}."),
+                    }
+                }
+                Err(err) => AddonAutoNotice {
+                    ok: false,
+                    retry: addon_auto::addon_failure_retries(matches!(err, core::UpdateError::Network(_)), 0),
+                    game_running,
+                    installed: installed_text,
+                    latest: latest_ver,
+                    message: err.to_string(),
+                },
+            }
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -565,27 +757,54 @@ struct SelfCheck {
     current: String,
     latest: Option<String>,
     update_available: bool,
+    offer: bool,
 }
 
 #[tauri::command]
-async fn check_self_update() -> Result<SelfCheck, String> {
+async fn check_self_update(state: State<'_, AppState>) -> Result<SelfCheck, String> {
     let current = env!("CARGO_PKG_VERSION").to_string();
+    let deferred = state.prefs.lock().map_err(|e| e.to_string())?.deferred_app_version.clone();
     let repo = defaults_repo();
     if repo.is_empty() {
-        return Ok(SelfCheck { current, latest: None, update_available: false });
+        return Ok(SelfCheck { current, latest: None, update_available: false, offer: false });
     }
     let current_for_check = current.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let found = tauri::async_runtime::spawn_blocking(move || -> Result<(String, Option<String>, bool), String> {
         let latest = core::latest_app(&repo).map_err(|e| e.to_string())?;
         let ver = latest.as_ref().map(|release| release.version.to_string());
         let update_available = match (&ver, semver::Version::parse(&current_for_check)) {
             (Some(latest), Ok(current)) => semver::Version::parse(latest).map(|lv| lv > current).unwrap_or(false),
             _ => false,
         };
-        Ok(SelfCheck { current: current_for_check, latest: ver, update_available })
+        Ok((current_for_check, ver, update_available))
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    let (current, ver, update_available) = found?;
+    let offer = app_update::should_offer(&current, ver.as_deref(), deferred.as_deref());
+    Ok(SelfCheck { current, latest: ver, update_available, offer })
+}
+
+#[tauri::command]
+async fn defer_app_update(state: State<'_, AppState>, version: String) -> Result<(), String> {
+    let version = version.trim();
+    if version.is_empty() {
+        return Err("No app version to defer.".into());
+    }
+    let mut prefs = state.prefs.lock().map_err(|e| e.to_string())?;
+    prefs.deferred_app_version = Some(version.to_string());
+    config::save_prefs(&prefs)
+}
+
+#[derive(Serialize)]
+struct AppUpdateGate {
+    installed: bool,
+    message: String,
+}
+
+#[tauri::command]
+async fn accept_app_update() -> Result<AppUpdateGate, String> {
+    Ok(AppUpdateGate { installed: app_update::update_now_installs(), message: app_update::VERIFIED_INSTALL_MISSING.into() })
 }
 
 #[tauri::command]
@@ -613,9 +832,8 @@ fn restore_main(app: &AppHandle) {
 
 fn install_tray(app: &tauri::App) -> Result<(), String> {
     let show = MenuItem::with_id(app, "show", tray_life::MENU_SHOW, true, None::<&str>).map_err(|e| e.to_string())?;
-    let upload = MenuItem::with_id(app, "upload", "Upload now", true, None::<&str>).map_err(|e| e.to_string())?;
     let exit = MenuItem::with_id(app, "exit", tray_life::MENU_EXIT, true, None::<&str>).map_err(|e| e.to_string())?;
-    let menu = Menu::with_items(app, &[&show, &upload, &exit]).map_err(|e| e.to_string())?;
+    let menu = Menu::with_items(app, &[&show, &exit]).map_err(|e| e.to_string())?;
     let icon = app.default_window_icon().cloned().ok_or_else(|| "This build has no window icon.".to_string())?;
     let mut tray = TrayIconBuilder::new()
         .menu(&menu)
@@ -629,12 +847,6 @@ fn install_tray(app: &tauri::App) -> Result<(), String> {
                 app.exit(0);
             }
             "show" => restore_main(app),
-            "upload" => {
-                let app = app.clone();
-                std::thread::spawn(move || {
-                    let _ = perform_upload(&app);
-                });
-            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -669,6 +881,7 @@ pub fn run() {
             connect_cancel: Mutex::new(None),
             autostart_lock: Mutex::new(()),
             upload_seq: upload_gate::UploadSeq::default(),
+            upload_flight: upload_gate::Flight::default(),
         })
         .invoke_handler(tauri::generate_handler![
             get_boot,
@@ -687,6 +900,8 @@ pub fn run() {
             skip_addon_version,
             start_watch,
             check_self_update,
+            defer_app_update,
+            accept_app_update,
             pick_folder
         ])
         .setup(|app| {

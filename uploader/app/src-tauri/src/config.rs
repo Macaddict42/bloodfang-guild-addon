@@ -35,6 +35,9 @@ pub struct Prefs {
     /// Latest addon version the user chose Skip this version for (SPEC §18b).
     #[serde(default)]
     pub skipped_addon_version: Option<String>,
+    /// Uploader-app version the user chose Later for. Not an addon setting.
+    #[serde(default)]
+    pub deferred_app_version: Option<String>,
     pub setup_done: bool,
 }
 

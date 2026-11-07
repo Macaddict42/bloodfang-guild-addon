@@ -112,6 +112,58 @@ pub fn finish_upload(prefs: &mut Prefs, seq: &UploadSeq, started: u64, result: R
     }
 }
 
+/// Network and rate-limit failures may be tried again. A bad token, an HTTP
+/// refusal, and a per-string result are not retried.
+pub fn transient_retry(err: &core::UploadError, attempt: u32) -> bool {
+    attempt < 3 && matches!(err, core::UploadError::Network(_) | core::UploadError::RateLimited)
+}
+
+pub fn retry_pause(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(200 * u64::from(attempt.max(1))).min(std::time::Duration::from_secs(1))
+}
+
+/// One upload runs at a time. A trigger that arrives during it is remembered
+/// and runs once more, instead of stacking parallel uploads.
+pub struct Flight {
+    inner: std::sync::Mutex<FlightState>,
+}
+
+struct FlightState {
+    running: bool,
+    pending: bool,
+}
+
+impl Default for Flight {
+    fn default() -> Self {
+        Self { inner: std::sync::Mutex::new(FlightState { running: false, pending: false }) }
+    }
+}
+
+impl Flight {
+    pub fn acquire(&self) -> bool {
+        let mut guard = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        if guard.running {
+            guard.pending = true;
+            false
+        } else {
+            guard.running = true;
+            true
+        }
+    }
+
+    /// `true` when a trigger arrived while this upload was running.
+    pub fn take_repeat(&self) -> bool {
+        let mut guard = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        if guard.pending {
+            guard.pending = false;
+            true
+        } else {
+            guard.running = false;
+            false
+        }
+    }
+}
+
 fn unix_now() -> String {
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     format!("{secs}")
@@ -146,6 +198,27 @@ mod tests {
             at: "200".into(),
             status: status.into(),
         }
+    }
+
+    #[test]
+    fn transient_errors_retry_and_auth_or_http_do_not() {
+        assert!(transient_retry(&core::UploadError::Network("offline".into()), 0));
+        assert!(transient_retry(&core::UploadError::Network("offline".into()), 2));
+        assert!(!transient_retry(&core::UploadError::Network("offline".into()), 3));
+        assert!(transient_retry(&core::UploadError::RateLimited, 1));
+        assert!(!transient_retry(&core::UploadError::BadToken, 0));
+        assert!(!transient_retry(&core::UploadError::Http(403, "no".into()), 0));
+        assert!(retry_pause(1) <= std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_second_trigger_waits_instead_of_overlapping() {
+        let flight = Flight::default();
+        assert!(flight.acquire());
+        assert!(!flight.acquire());
+        assert!(flight.take_repeat());
+        assert!(!flight.take_repeat());
+        assert!(flight.acquire());
     }
 
     #[test]
