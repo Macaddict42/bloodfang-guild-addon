@@ -18,8 +18,15 @@
 //!   `/callback`, no query or fragment), `state`, `code_challenge`,
 //!   `code_challenge_method=S256`, `scope=ingest`.
 //!   No session: `302` to `/signin?callbackUrl=` the same-origin authorize URL.
-//!   Session without Officer, GM, or Webmaster: `403`, no redirect, no code.
-//!   Session with a role: consent page, not an automatic approval.
+//!   Who may consent is the site's token rule (Trial and up can upload their own
+//!   character strings; Officer, GM, and Webmaster stay required for guild bank
+//!   and raid ingest). Do not refuse every non-officer here.
+//!   Optional `prompt=login` (no other prompt value): sign out the current
+//!   Auth.js session first, then continue to Discord sign-in. `callbackUrl`
+//!   must be this same-origin authorize URL with `prompt` removed. Do not
+//!   redirect to the loopback during sign-out, and do not log the code,
+//!   verifier, state, or token. Absent `prompt` reuses the current session.
+//!   Session allowed to mint a token: consent page, not an automatic approval.
 //!   Consent `POST /api/uploader/oauth/consent` with the Auth.js CSRF token.
 //!   Deny redirects to `{redirect_uri}?error=access_denied&state=`.
 //!   Approve redirects to `{redirect_uri}?code=&state=` only. Code is 32 bytes,
@@ -64,7 +71,7 @@ impl std::fmt::Display for AuthError {
             AuthError::Cancelled => "Sign-in cancelled. Nothing was saved.",
             AuthError::Expired => "Sign-in expired. Try again.",
             AuthError::Denied => "Sign-in was declined. Nothing was saved.",
-            AuthError::Forbidden => "This account can't upload. Officer, GM, or Webmaster is required.",
+            AuthError::Forbidden => "Sign in again with a Discord account that has the right role.",
             AuthError::InvalidGrant => "Sign-in expired or was already used. Try again.",
             AuthError::Browser => "Couldn't open the browser. Nothing was saved.",
             AuthError::Bind => "Couldn't listen for the browser on this computer. Nothing was saved.",
@@ -438,6 +445,7 @@ pub fn connect_loopback(
     site: &str,
     overall: Duration,
     cancel: &AtomicBool,
+    prompt_login: bool,
     mut open_browser: impl FnMut(&str) -> bool,
 ) -> Result<String, AuthError> {
     if cancel.load(Ordering::SeqCst) {
@@ -454,13 +462,19 @@ pub fn connect_loopback(
     let challenge = pkce_challenge(&verifier);
     let state = b64url(&random_bytes(32)?);
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
-    let authorize = format!(
+    let mut authorize = format!(
         "{site}{AUTHORIZE_PATH}?response_type=code&client_id={CLIENT_ID}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&scope=ingest",
         pct(&redirect_uri),
         pct(&state),
         pct(&challenge),
     );
-    if authorize.contains("upl_") || authorize.contains(&verifier) {
+    if prompt_login {
+        authorize.push_str("&prompt=login");
+    }
+    if authorize.contains("upl_") || authorize.contains(&verifier) || authorize.matches("prompt=").count() > 1 {
+        return Err(AuthError::BadResponse);
+    }
+    if prompt_login != authorize.ends_with("&prompt=login") {
         return Err(AuthError::BadResponse);
     }
     if !open_browser(&authorize) {
@@ -592,6 +606,7 @@ mod tests {
             assert!(!url.contains("upl_"), "token leaked into authorize url");
             assert!(!url.contains("code_verifier"), "verifier leaked into authorize url");
             assert!(url.contains("code_challenge_method=S256"));
+            assert!(!url.contains("prompt="), "same-session sign-in must not send prompt");
             assert!(url.contains("127.0.0.1"));
             let challenge = url.split("code_challenge=").nth(1).unwrap().split('&').next().unwrap().to_string();
             *challenge_slot.lock().unwrap() = pct_decode(&challenge);
@@ -632,7 +647,7 @@ mod tests {
     fn missing_route_does_not_open_a_browser_or_return_a_token() {
         let mock = spawn_mock("missing");
         let mut opened = false;
-        let err = connect_loopback(&mock.base, Duration::from_secs(5), &AtomicBool::new(false), |_| {
+        let err = connect_loopback(&mock.base, Duration::from_secs(5), &AtomicBool::new(false), false, |_| {
             opened = true;
             true
         })
@@ -649,7 +664,7 @@ mod tests {
         let token = connect_loopback(
             &mock.base,
             Duration::from_secs(5),
-            &AtomicBool::new(false),
+            &AtomicBool::new(false), false,
             drive_browser(mock.challenge.clone(), "use-state".into()),
         )
         .unwrap();
@@ -663,12 +678,13 @@ mod tests {
         let err = connect_loopback(
             &mock.base,
             Duration::from_secs(5),
-            &AtomicBool::new(false),
+            &AtomicBool::new(false), false,
             drive_browser(mock.challenge.clone(), "use-state".into()),
         )
         .unwrap_err();
         assert_eq!(err, AuthError::Forbidden);
         assert!(!err.to_string().contains("upl_"));
+        assert!(!err.to_string().contains("Officer"));
     }
 
     #[test]
@@ -677,7 +693,7 @@ mod tests {
         let err = connect_loopback(
             &mock.base,
             Duration::from_secs(5),
-            &AtomicBool::new(false),
+            &AtomicBool::new(false), false,
             drive_browser(mock.challenge.clone(), "use-state".into()),
         )
         .unwrap_err();
@@ -690,7 +706,7 @@ mod tests {
         let err = connect_loopback(
             &mock.base,
             Duration::from_secs(5),
-            &AtomicBool::new(false),
+            &AtomicBool::new(false), false,
             drive_browser(mock.challenge.clone(), "use-state".into()),
         )
         .unwrap_err();
@@ -704,7 +720,7 @@ mod tests {
         let err = connect_loopback(
             &mock.base,
             Duration::from_secs(5),
-            &AtomicBool::new(false),
+            &AtomicBool::new(false), false,
             drive_browser(mock.challenge.clone(), "denied".into()),
         )
         .unwrap_err();
@@ -718,7 +734,7 @@ mod tests {
         let err = connect_loopback(
             &mock.base,
             Duration::from_secs(5),
-            &AtomicBool::new(false),
+            &AtomicBool::new(false), false,
             drive_browser(mock.challenge.clone(), "leak".into()),
         )
         .unwrap_err();
@@ -737,7 +753,7 @@ mod tests {
             flag.store(true, Ordering::SeqCst);
         });
         let start = Instant::now();
-        let err = connect_loopback(&mock.base, Duration::from_secs(30), &cancel, |_| true).unwrap_err();
+        let err = connect_loopback(&mock.base, Duration::from_secs(30), &cancel, false, |_| true).unwrap_err();
         let elapsed = start.elapsed();
         assert_eq!(err, AuthError::Cancelled);
         assert!(elapsed < Duration::from_secs(2), "cancel elapsed {elapsed:?}");
@@ -748,7 +764,7 @@ mod tests {
     fn missing_or_unsafe_site_does_not_open_a_browser() {
         for site in ["", "http://evil.example", "https://user:pass@example.com", "https://localhost"] {
             let mut opened = false;
-            let err = connect_loopback(site, Duration::from_secs(2), &AtomicBool::new(false), |_| {
+            let err = connect_loopback(site, Duration::from_secs(2), &AtomicBool::new(false), false, |_| {
                 opened = true;
                 true
             })
@@ -765,7 +781,7 @@ mod tests {
         let err = connect_loopback(
             &mock.base,
             Duration::from_millis(400),
-            &AtomicBool::new(false),
+            &AtomicBool::new(false), false,
             drive_browser(mock.challenge.clone(), "wrong-state".into()),
         )
         .unwrap_err();
@@ -793,10 +809,26 @@ mod tests {
     }
 
     #[test]
+    fn different_account_sends_prompt_login_and_no_token() {
+        let mock = spawn_mock("ok");
+        let err = connect_loopback(&mock.base, Duration::from_secs(5), &AtomicBool::new(false), true, |url| {
+            assert!(url.ends_with("&prompt=login"));
+            assert_eq!(url.matches("prompt=").count(), 1);
+            assert!(!url.contains("upl_"));
+            assert!(!url.contains("code_verifier"));
+            assert!(url.contains("redirect_uri="));
+            false
+        })
+        .unwrap_err();
+        assert_eq!(err, AuthError::Browser);
+        assert_eq!(mock.hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn expiry_returns_within_the_deadline() {
         let mock = spawn_mock("ok");
         let start = Instant::now();
-        let err = connect_loopback(&mock.base, Duration::from_millis(250), &AtomicBool::new(false), |_| true).unwrap_err();
+        let err = connect_loopback(&mock.base, Duration::from_millis(250), &AtomicBool::new(false), false, |_| true).unwrap_err();
         let elapsed = start.elapsed();
         assert_eq!(err, AuthError::Expired);
         assert!(elapsed < Duration::from_secs(2), "expiry elapsed {elapsed:?}");

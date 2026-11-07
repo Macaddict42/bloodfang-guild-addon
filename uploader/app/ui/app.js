@@ -70,9 +70,11 @@ function humanizeLines(lines) {
   return labels.join(" · ");
 }
 
-function showErr(panelId, msgId, message) {
+function showErr(panelId, msgId, message, title) {
   const panel = $(panelId);
   $(msgId).textContent = sentenceCase(String(message));
+  const strong = panel.querySelector("strong");
+  if (strong && title) strong.textContent = title;
   panel.hidden = false;
 }
 
@@ -235,7 +237,7 @@ function applyToken(status) {
     $("connect-state").textContent = "Couldn't read the saved sign-in. You can try again.";
   } else if (hasToken) {
     $("connect-state").textContent = "Signed in. The token stays in the system credential store.";
-  } else {
+  } else if (!connectInFlight && $("setup-err").hidden) {
     $("connect-state").textContent = "Not signed in.";
   }
   maybeMain();
@@ -275,7 +277,7 @@ async function boot() {
   fillMainFromPrefs(bootState.prefs);
   const host = bootState.siteHost || "";
   $("site-line").textContent = bootState.siteConfigured
-    ? `Sign in opens your browser for ${host}. You don't type an address or a token.`
+    ? `Opens your browser for ${host}. You don't type an address or a token.`
     : "This build has no site address, so sign-in and upload are off.";
   if (!bootState.prefsReadable) {
     showErr("setup-err", "setup-err-msg", "Saved settings couldn't be read, so they were left unchanged.");
@@ -299,8 +301,8 @@ async function boot() {
       showFolder("");
       const choices = probe.choices || [];
       $("folder-hint").textContent = choices.length
-        ? "More than one game folder was found. Pick one. This does not search the whole disk."
-        : "The usual game folder wasn't found. Choose it once. This does not search the whole disk.";
+        ? "More than one game folder was found. Pick one — only needed when auto-detect isn't sure. This does not search the whole disk."
+        : "Couldn't find the usual Forever install. Choose the game folder once — only needed when auto-detect misses. This does not search the whole disk.";
       setFolderUi(true, choices);
       setState("needs-folder");
     }
@@ -314,27 +316,48 @@ async function boot() {
   });
 }
 
-$("btn-connect").addEventListener("click", async () => {
+function beginWait() {
   clearErr("setup-err");
   connectInFlight = true;
   $("btn-connect").disabled = true;
+  $("btn-switch").hidden = true;
   $("btn-cancel-connect").hidden = false;
   $("connect-state").textContent = "Waiting for the browser…";
+  show("setup");
+  setState("waiting");
+}
+
+function failConnect(message) {
+  connectInFlight = false;
+  hasToken = false;
+  $("btn-cancel-connect").hidden = true;
+  $("btn-connect").hidden = false;
+  $("btn-connect").disabled = false;
+  $("btn-switch").hidden = false;
+  const text = String(message);
+  const cancelled = /cancelled/i.test(text);
+  $("connect-state").textContent = cancelled ? "Sign-in didn't finish." : "Nothing was saved.";
+  const title = /right role/i.test(text) ? "Couldn't sign in" : "Couldn't continue";
+  showErr("setup-err", "setup-err-msg", text, title);
+  show("setup");
+  setState(cancelled ? "cancelled" : "sign-in-failed");
+}
+
+async function startConnect(switchAccount) {
+  beginWait();
   try {
-    const outcome = await invoke("connect_browser");
+    const outcome = await invoke("connect_browser", { switchAccount: !!switchAccount });
     connectInFlight = false;
     $("btn-cancel-connect").hidden = true;
+    $("btn-switch").hidden = true;
     applyToken({ hasToken: outcome.hasToken === true, state: outcome.hasToken ? "present" : "absent" });
   } catch (e) {
-    connectInFlight = false;
-    hasToken = false;
-    $("btn-cancel-connect").hidden = true;
-    $("btn-connect").disabled = false;
-    $("connect-state").textContent = "Not signed in.";
-    showErr("setup-err", "setup-err-msg", e);
-    show("setup");
+    failConnect(e);
   }
-});
+}
+
+$("btn-connect").addEventListener("click", () => startConnect(false));
+$("btn-switch").addEventListener("click", () => startConnect(true));
 
 $("btn-cancel-connect").addEventListener("click", () => {
   invoke("cancel_connect").catch(() => {});
@@ -398,7 +421,10 @@ $("btn-upload").addEventListener("click", async () => {
     $("upload-ok").hidden = false;
   } catch (e) {
     const msg = String(e);
-    showErr("upload-err", "upload-err-msg", msg);
+    let title = "Upload failed";
+    if (msg.startsWith("Guild bank")) title = "Couldn't send guild bank";
+    else if (msg.startsWith("Raid uploads")) title = "Couldn't send raid data";
+    showErr("upload-err", "upload-err-msg", msg, title);
     if (/rejected the uploader token|sign in/i.test(msg)) {
       hasToken = false;
       applyToken({ hasToken: false, state: "absent" });
@@ -501,7 +527,7 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
     mock.prefs.gameFolder = mock.folder;
     mock.prefs.setupDone = true;
   }
-  if (screen === "main" || screen === "denied" || screen === "expired" || screen === "cancelled") {
+  if (screen === "main" || screen === "denied" || screen === "expired" || screen === "cancelled" || screen === "retry" || screen === "waiting" || screen === "offline") {
     mock.hasToken = screen === "main";
     mock.tokenState = mock.hasToken ? "present" : "absent";
     mock.folder = os === "mac" ? macChoices[0] : winFolder;
@@ -550,7 +576,8 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
           return { resolved: null, source: "none", showFolderUi: true, choices: mock.choices };
         }
         if (cmd === "connect_browser") {
-          if (screen === "denied") throw "This account can't upload. Officer, GM, or Webmaster is required.";
+          if (args && args.switchAccount) mock._promptLogin = true;
+          if (screen === "denied" || screen === "retry") throw "Sign in again with a Discord account that has the right role.";
           if (screen === "expired") throw "Sign-in expired. Try again.";
           if (screen === "cancelled") throw "Sign-in cancelled. Nothing was saved.";
           if (screen === "offline") throw "Couldn't reach the site to sign in. Nothing was saved.";
@@ -630,7 +657,9 @@ bootPromise.catch((e) => {
 if (window.__PREVIEW__) {
   const previewScreen = new URLSearchParams(location.search).get("screen");
   bootPromise.then(() => {
-    if (["denied", "expired", "cancelled", "offline"].includes(previewScreen)) {
+    if (previewScreen === "waiting") {
+      setTimeout(() => beginWait(), 400);
+    } else if (["denied", "expired", "cancelled", "offline", "retry"].includes(previewScreen)) {
       $("btn-connect").disabled = false;
       $("btn-connect").click();
     }

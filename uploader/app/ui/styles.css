@@ -54,6 +54,7 @@ button {
 }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 button.primary { background: var(--accent); color: var(--accent-fg); }
+#btn-browse, #btn-switch, #btn-cancel-connect, #btn-connect { padding: 10px 14px; }
 button.secondary { background: transparent; color: var(--fg); border-color: var(--line); }
 .status { margin: 0 0 12px; display: grid; gap: 8px; }
 .status div { display: grid; grid-template-columns: 110px 1fr; gap: 8px; font-size: 14px; }

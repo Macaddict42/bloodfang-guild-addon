@@ -170,8 +170,9 @@ async fn probe_game_folder(state: State<'_, AppState>) -> Result<FolderView, Str
 }
 
 #[tauri::command]
-async fn connect_browser(state: State<'_, AppState>) -> Result<ConnectOutcome, String> {
+async fn connect_browser(state: State<'_, AppState>, switch_account: Option<bool>) -> Result<ConnectOutcome, String> {
     let site = baked::site_url()?;
+    let prompt_login = switch_account.unwrap_or(false);
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut slot = state.connect_cancel.lock().map_err(|e| e.to_string())?;
@@ -182,7 +183,7 @@ async fn connect_browser(state: State<'_, AppState>) -> Result<ConnectOutcome, S
     }
     let cancel_for_call = cancel.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        core::browser_auth::connect_loopback(&site, Duration::from_secs(5 * 60), &cancel_for_call, |url| {
+        core::browser_auth::connect_loopback(&site, Duration::from_secs(5 * 60), &cancel_for_call, prompt_login, |url| {
             opener::open(url).is_ok()
         })
     })

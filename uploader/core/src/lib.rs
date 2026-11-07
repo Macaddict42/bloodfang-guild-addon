@@ -74,6 +74,26 @@ impl std::fmt::Display for UploadError {
 /// A string is finished when the site accepted it or already had it.
 pub fn done(o: &Outcome) -> bool { o.ok || o.error.as_deref() == Some("duplicate") }
 
+/// 403 text from the types in this batch. Bank and raid stay Officer, GM, or
+/// Webmaster. Anything else is a refusal, not a claim that the whole app is officer-only.
+fn scope_denial(strings: &[String]) -> String {
+    let mut bank = false;
+    let mut raid = false;
+    for s in strings {
+        if s.starts_with("!BF:gbank:") {
+            bank = true;
+        } else if s.starts_with("!BF:attendance:") || s.starts_with("!BF:kills:") || s.starts_with("!BF:signup:") || s.starts_with("!BF:signups:") {
+            raid = true;
+        }
+    }
+    match (bank, raid) {
+        (true, false) => "Guild bank snapshots need Officer, GM, or Webmaster. Your other uploads still work.".into(),
+        (false, true) => "Raid uploads need Officer, GM, or Webmaster. Your other uploads still work.".into(),
+        (true, true) => "Guild bank snapshots and raid uploads need Officer, GM, or Webmaster. Your other uploads still work.".into(),
+        (false, false) => "The site refused this upload.".into(),
+    }
+}
+
 /// Drop an `upl_` secret if a site error body echoes one. The UI shows this string.
 fn redact_uploader_token(body: &str) -> String {
     let mut out = String::new();
@@ -102,12 +122,8 @@ pub fn post(site: &str, token: &str, strings: &[String]) -> Result<Vec<Outcome>,
         }
         Err(ureq::Error::Status(401, _)) => Err(UploadError::BadToken),
         Err(ureq::Error::Status(403, r)) => {
-            let body = redact_uploader_token(&r.into_string().unwrap_or_default());
-            if body.contains("\"forbidden\"") {
-                Err(UploadError::Http(403, "this account can't upload. Officer, GM, or Webmaster is required".into()))
-            } else {
-                Err(UploadError::Http(403, body))
-            }
+            let _body = redact_uploader_token(&r.into_string().unwrap_or_default());
+            Err(UploadError::Http(403, scope_denial(strings)))
         }
         Err(ureq::Error::Status(429, _)) => Err(UploadError::RateLimited),
         Err(ureq::Error::Status(c, r)) => Err(UploadError::Http(c, redact_uploader_token(&r.into_string().unwrap_or_default()))),
@@ -148,6 +164,14 @@ mod tests {
     fn duplicate_counts_as_done() {
         assert!(done(&Outcome { ty: None, ok: false, error: Some("duplicate".into()) }));
         assert!(!done(&Outcome { ty: None, ok: false, error: Some("bad_sig".into()) }));
+    }
+    #[test]
+    fn bank_denial_is_not_a_blanket_officer_gate() {
+        let bank = scope_denial(&["!BF:gbank:v1:abc".into()]);
+        assert!(bank.contains("Guild bank snapshots need Officer, GM, or Webmaster"));
+        let own = scope_denial(&["!BF:recipes:v1:abc".into()]);
+        assert_eq!(own, "The site refused this upload.");
+        assert!(!own.contains("Officer"));
     }
     #[test]
     fn http_errors_do_not_keep_an_uploader_token() {

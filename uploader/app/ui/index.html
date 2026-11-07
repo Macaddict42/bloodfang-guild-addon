@@ -10,7 +10,7 @@
   <div id="app">
     <header class="top">
       <h1>Guild Uploader</h1>
-      <p class="sub">Reads SavedVariables only. Never touches the game process.</p>
+      <p class="sub">Reads the addon's saved files (SavedVariables) only. Never touches the game process.</p>
     </header>
 
     <section id="screen-boot" class="screen" aria-label="Opening" aria-live="polite">
@@ -23,7 +23,7 @@
       <p id="site-line" class="hint"></p>
       <p id="connect-state" class="note">Checking saved sign-in…</p>
       <div id="folder-block" hidden>
-        <p id="folder-hint" class="hint">The usual game folder wasn't found. Choose it once. This does not search the whole disk.</p>
+        <p id="folder-hint" class="hint">Couldn't find the usual Forever install. Choose the game folder once — only needed when auto-detect misses. This does not search the whole disk.</p>
         <p id="game-folder-label" class="detail" hidden></p>
         <div id="folder-choices" class="candidates" hidden></div>
         <div class="actions">
@@ -34,12 +34,13 @@
       <div id="setup-err" class="err" role="alert" hidden>
         <i aria-hidden="true"></i>
         <div>
-          <strong>Couldn't continue</strong>
+          <strong id="setup-err-title">Couldn't continue</strong>
           <span id="setup-err-msg"></span>
         </div>
       </div>
       <div class="actions">
-        <button type="button" id="btn-connect" class="primary" disabled>Sign in with browser</button>
+        <button type="button" id="btn-connect" class="primary" disabled>Sign in with Discord</button>
+        <button type="button" id="btn-switch" class="secondary" hidden>Sign in with a different account</button>
         <button type="button" id="btn-cancel-connect" class="secondary" hidden>Cancel</button>
       </div>
     </section>
@@ -55,7 +56,7 @@
       <div id="upload-err" class="err" role="alert" hidden>
         <i aria-hidden="true"></i>
         <div>
-          <strong>Upload failed</strong>
+          <strong id="upload-err-title">Upload failed</strong>
           <span id="upload-err-msg"></span>
         </div>
       </div>
