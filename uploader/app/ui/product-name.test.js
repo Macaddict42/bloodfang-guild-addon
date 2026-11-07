@@ -18,7 +18,7 @@ assert.strictEqual(conf.bundle.publisher, "Bloodfang Guild");
 assert.ok(!html.includes("Guild Uploader"));
 assert.ok(!html.includes("Upload now"));
 assert.ok(!html.includes("Update available"));
-assert.ok(html.includes("A new update is available. Would you like to update now?"));
+assert.ok(!html.includes("A new update is available. Would you like to update now?"));
 assert.ok(html.includes("Saved scans upload on their own."));
 
 console.log("product-name.test.js ok");

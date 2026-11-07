@@ -16,6 +16,8 @@ pub struct AddonRelease {
     pub zip_name: String,
     pub zip_url: String,
     pub sums_url: Option<String>,
+    /// Detached signature of the archive or installer bytes, when the release has one.
+    pub sig_url: Option<String>,
 }
 
 #[derive(Debug)]
@@ -54,7 +56,8 @@ pub fn latest_addon(repo: &str, addon_name: &str) -> Result<Option<AddonRelease>
         let zip = r.assets.iter().find(|a| a.name == format!("{addon_name}-{ver}.zip") || a.name.starts_with(&format!("{addon_name}-")) && a.name.ends_with(".zip"));
         let Some(zip) = zip else { continue };
         let sums = r.assets.iter().find(|a| a.name == "SHA256SUMS").map(|a| a.browser_download_url.clone());
-        let cand = AddonRelease { tag: r.tag_name.clone(), version: ver.clone(), zip_name: zip.name.clone(), zip_url: zip.browser_download_url.clone(), sums_url: sums };
+        let sig_url = signature_url(&r.assets, &zip.name);
+        let cand = AddonRelease { tag: r.tag_name.clone(), version: ver.clone(), zip_name: zip.name.clone(), zip_url: zip.browser_download_url.clone(), sums_url: sums, sig_url };
         if best.as_ref().map(|b| &cand.version > &b.version).unwrap_or(true) { best = Some(cand); }
     }
     Ok(best)
@@ -82,6 +85,19 @@ fn get_with(url: &str, agent: &ureq::Agent) -> Result<String, UpdateError> {
         .map_err(|e| UpdateError::Network(e.to_string()))?
         .into_string()
         .map_err(|e| UpdateError::Network(e.to_string()))
+}
+
+fn signature_url(assets: &[GhAsset], asset_name: &str) -> Option<String> {
+    let expected = format!("{asset_name}.sig");
+    assets.iter().find(|a| a.name == expected).map(|a| a.browser_download_url.clone())
+}
+
+pub fn download_text(url: &str) -> Result<String, UpdateError> {
+    get(url)
+}
+
+pub fn download_bytes(url: &str) -> Result<Vec<u8>, UpdateError> {
+    get_bytes(url)
 }
 
 fn get_bytes(url: &str) -> Result<Vec<u8>, UpdateError> {
@@ -241,12 +257,14 @@ pub fn latest_app(repo: &str) -> Result<Option<AddonRelease>, UpdateError> {
         };
         let Some(asset) = asset else { continue };
         let sums = r.assets.iter().find(|a| a.name == "SHA256SUMS").map(|a| a.browser_download_url.clone());
+        let sig_url = signature_url(&r.assets, &asset.name);
         let cand = AddonRelease {
             tag: r.tag_name.clone(),
             version: ver.clone(),
             zip_name: asset.name.clone(),
             zip_url: asset.browser_download_url.clone(),
             sums_url: sums,
+            sig_url,
         };
         if best.as_ref().map(|b| &cand.version > &b.version).unwrap_or(true) { best = Some(cand); }
     }

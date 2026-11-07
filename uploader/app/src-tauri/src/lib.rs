@@ -28,6 +28,8 @@ struct AppState {
     autostart_lock: Mutex<()>,
     upload_seq: upload_gate::UploadSeq,
     upload_flight: upload_gate::Flight,
+    addon_started: AtomicBool,
+    addon_stop: Arc<AtomicBool>,
 }
 
 #[derive(Serialize)]
@@ -563,13 +565,13 @@ async fn start_watch(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
     };
     let game = PathBuf::from(&prefs.game_folder);
     let watch_paths = if files.is_empty() { saved_variable_dirs(&game) } else { files.clone() };
+    spawn_addon_auto(app.clone());
     if watch_paths.is_empty() {
         let mut flag = state.watching.lock().map_err(|e| e.to_string())?;
         *flag = false;
         return Ok(());
     }
     let backlog = !files.is_empty();
-    let app_for_addon = app.clone();
     std::thread::spawn(move || {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut debouncer = new_debouncer(Duration::from_millis(1500), tx).ok();
@@ -594,7 +596,6 @@ async fn start_watch(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
             }
         }
     });
-    spawn_addon_auto(app_for_addon);
     Ok(())
 }
 
@@ -624,19 +625,46 @@ struct AddonAutoNotice {
 }
 
 fn spawn_addon_auto(app: AppHandle) {
+    let state = app.state::<AppState>();
+    if state.addon_started.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let stop = Arc::clone(&state.addon_stop);
     std::thread::spawn(move || {
-        let first = addon_auto_once(&app);
-        let retry_network = first.retry;
-        let wait_for_game = first.message.starts_with("Game is running");
-        let _ = app.emit("addon-auto", &first);
-        if retry_network {
-            std::thread::sleep(Duration::from_millis(400));
-            let _ = app.emit("addon-auto", &addon_auto_once(&app));
-        } else if wait_for_game {
-            std::thread::sleep(Duration::from_secs(20));
-            let _ = app.emit("addon-auto", &addon_auto_once(&app));
+        let mut sched = addon_auto::Scheduler::new(addon_auto::Cadence::production());
+        let mut now = 0u64;
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                break;
+            }
+            match sched.poll(now) {
+                addon_auto::Due::Busy => break,
+                addon_auto::Due::Wait { ms } => {
+                    sleep_cancellable(Duration::from_millis(ms), &stop);
+                    now = now.saturating_add(ms);
+                }
+                addon_auto::Due::Check => {
+                    let notice = addon_auto_once(&app);
+                    let outcome = addon_auto::outcome_from_notice(&notice.message, notice.ok, notice.retry);
+                    let _ = app.emit("addon-auto", &notice);
+                    sched.finish(now, outcome);
+                }
+            }
         }
     });
+}
+
+fn sleep_cancellable(total: Duration, stop: &AtomicBool) {
+    let step = Duration::from_secs(1);
+    let mut left = total;
+    while left > Duration::ZERO {
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let slice = if left > step { step } else { left };
+        std::thread::sleep(slice);
+        left = left.saturating_sub(slice);
+    }
 }
 
 fn addon_auto_once(app: &AppHandle) -> AddonAutoNotice {
@@ -804,7 +832,18 @@ struct AppUpdateGate {
 
 #[tauri::command]
 async fn accept_app_update() -> Result<AppUpdateGate, String> {
-    Ok(AppUpdateGate { installed: app_update::update_now_installs(), message: app_update::VERIFIED_INSTALL_MISSING.into() })
+    let repo = defaults_repo();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        app_update::decide(
+            app_update::Choice::UpdateNow,
+            &app_update::trust_from_build(),
+            || app_update::fetch_published(&repo),
+            app_update::launch_verified_installer,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(AppUpdateGate { installed: result.installed, message: result.message })
 }
 
 #[tauri::command]
@@ -882,6 +921,8 @@ pub fn run() {
             autostart_lock: Mutex::new(()),
             upload_seq: upload_gate::UploadSeq::default(),
             upload_flight: upload_gate::Flight::default(),
+            addon_started: AtomicBool::new(false),
+            addon_stop: Arc::new(AtomicBool::new(false)),
         })
         .invoke_handler(tauri::generate_handler![
             get_boot,
@@ -945,6 +986,9 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 if let Some(life) = app.try_state::<TrayLife>() {
                     life.exiting.store(true, Ordering::SeqCst);
+                }
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.addon_stop.store(true, Ordering::SeqCst);
                 }
             }
         });

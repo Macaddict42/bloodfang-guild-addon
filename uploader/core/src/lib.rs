@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 pub use detect::{candidates, folder_acceptable, looks_like_game_dir, probe_explicit, probe_game_folder, FolderProbe, FolderSource};
 pub use launch::quote_windows_run;
-pub use update::{latest_addon, latest_app, install_addon, installed_version, addons_dir, game_seems_running, AddonRelease, UpdateError};
+pub use update::{latest_addon, latest_app, install_addon, installed_version, addons_dir, game_seems_running, download_bytes, download_text, sha256_hex, sums_entry, AddonRelease, UpdateError};
 
 /// Types the site's uploader endpoint accepts.
 pub const TYPES: &[&str] = &["gbank", "recipes"];

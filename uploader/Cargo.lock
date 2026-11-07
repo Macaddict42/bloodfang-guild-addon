@@ -1537,6 +1537,7 @@ dependencies = [
  "notify",
  "notify-debouncer-mini",
  "opener",
+ "ring",
  "semver",
  "serde",
  "serde_json",

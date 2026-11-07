@@ -1,5 +1,20 @@
 /* global __TAURI__ */
 const $ = (id) => document.getElementById(id);
+
+function productDisplayName() {
+  const named = document.querySelector("h1")?.textContent?.trim();
+  return named || "uploader app";
+}
+
+function fillAppUpdateCopy() {
+  const name = productDisplayName();
+  const copy = $("app-update-copy");
+  if (!copy) return;
+  copy.textContent = `A ${name} update is available. Update the app now?`;
+  $("app-update")?.setAttribute("aria-label", `${name} update`);
+}
+
+fillAppUpdateCopy();
 const invoke = (cmd, args) => {
   if (window.__TAURI__?.core?.invoke) return window.__TAURI__.core.invoke(cmd, args);
   if (window.__TAURI_INTERNALS__?.invoke) return window.__TAURI_INTERNALS__.invoke(cmd, args);
@@ -646,7 +661,7 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
         }
         if (cmd === "defer_app_update") return null;
         if (cmd === "accept_app_update") {
-          return { installed: false, message: "This build can't install an app update. No verified installer is published, so nothing was downloaded or restarted." };
+          return { installed: false, message: "This build has no trusted update key, and no verified installer is published. Nothing was downloaded or restarted." };
         }
         throw new Error("unknown " + cmd);
       },
