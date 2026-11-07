@@ -626,17 +626,25 @@ mod tests {
                 format!("{redirect}?{query}")
             };
             let stripped = target.trim_start_matches("http://").to_string();
-            // The listener is not accepting until this closure returns, so the
-            // callback request has to be sent from another thread.
+            // Another thread, because this closure returns before the listener
+            // accepts. Retry: a single connect was late on a busy macOS runner
+            // and the test then hit its deadline.
             thread::spawn(move || {
-                thread::sleep(Duration::from_millis(80));
-                if let Some((host, path)) = stripped.split_once('/') {
-                    if let Ok(mut stream) = TcpStream::connect(host) {
-                        let req = format!("GET /{path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
-                        let _ = stream.write_all(req.as_bytes());
-                        let mut buf = [0u8; 1024];
-                        let _ = stream.read(&mut buf);
+                let Some((host, path)) = stripped.split_once('/') else { return };
+                let Ok(addr) = host.parse::<std::net::SocketAddr>() else { return };
+                let req = format!("GET /{path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+                let start = Instant::now();
+                while start.elapsed() < Duration::from_secs(4) {
+                    if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(200)) {
+                        let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                        if stream.write_all(req.as_bytes()).is_ok() {
+                            let mut buf = [0u8; 1024];
+                            let _ = stream.read(&mut buf);
+                            return;
+                        }
                     }
+                    thread::sleep(Duration::from_millis(20));
                 }
             });
             true
