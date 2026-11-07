@@ -411,35 +411,42 @@ $("btn-disconnect").addEventListener("click", async () => {
   }
 });
 
+function showUploadSuccess(r) {
+  $("last-upload").textContent = formatUploadTime(r.at);
+  const parts = linesApi().partitionUploadLines(r.lines);
+  $("last-status").textContent = formatStatus(r.status, parts.accepted.length);
+  const what = humanizeLines(parts.accepted);
+  if (what) {
+    $("what-sent-body").textContent = what;
+    $("what-sent").hidden = false;
+  }
+  if (parts.accepted.length) {
+    $("upload-ok").textContent = `Sent ${parts.accepted.length}.`;
+    $("upload-ok").hidden = false;
+  }
+  if (parts.refused.length) {
+    const note = linesApi().refusalMessage(parts.refused);
+    showErr("upload-err", "upload-err-msg", note.message, note.title);
+  }
+}
+
+function showUploadFailure(message) {
+  const msg = String(message || "");
+  showErr("upload-err", "upload-err-msg", msg, "Upload failed");
+  if (linesApi().uploadFailureDropsToken(msg)) {
+    hasToken = false;
+    applyToken({ hasToken: false, state: "absent" });
+  }
+}
+
 $("btn-upload").addEventListener("click", async () => {
   clearErr("upload-err");
   $("upload-ok").hidden = true;
   $("btn-upload").disabled = true;
   try {
-    const r = await invoke("upload_now");
-    $("last-upload").textContent = formatUploadTime(r.at);
-    const parts = linesApi().partitionUploadLines(r.lines);
-    $("last-status").textContent = formatStatus(r.status, parts.accepted.length);
-    const what = humanizeLines(parts.accepted);
-    if (what) {
-      $("what-sent-body").textContent = what;
-      $("what-sent").hidden = false;
-    }
-    if (parts.accepted.length) {
-      $("upload-ok").textContent = `Sent ${parts.accepted.length}.`;
-      $("upload-ok").hidden = false;
-    }
-    if (parts.refused.length) {
-      const note = linesApi().refusalMessage(parts.refused);
-      showErr("upload-err", "upload-err-msg", note.message, note.title);
-    }
+    showUploadSuccess(await invoke("upload_now"));
   } catch (e) {
-    const msg = String(e);
-    showErr("upload-err", "upload-err-msg", msg, "Upload failed");
-    if (linesApi().uploadFailureDropsToken(msg)) {
-      hasToken = false;
-      applyToken({ hasToken: false, state: "absent" });
-    }
+    showUploadFailure(e);
   } finally {
     if (addonUiState !== "updating") $("btn-upload").disabled = false;
   }
@@ -488,8 +495,14 @@ $("btn-addon-skip").addEventListener("click", async () => {
   }
 });
 
-listen("sv-changed", () => $("btn-upload").click());
-listen("tray-upload", () => $("btn-upload").click());
+listen("sv-changed", (event) => {
+  const r = event?.payload;
+  if (!r || typeof r !== "object" || !("ok" in r)) return;
+  clearErr("upload-err");
+  $("upload-ok").hidden = true;
+  if (!r.ok) showUploadFailure(r.error);
+  else showUploadSuccess(r);
+});
 listen("autostart-failed", (event) => {
   const msg = event?.payload || "Couldn't change start at login.";
   showErr("setup-err", "setup-err-msg", msg);

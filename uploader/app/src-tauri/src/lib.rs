@@ -1,6 +1,7 @@
 mod autostart;
 mod baked;
 mod config;
+mod install_hook;
 mod tray_life;
 
 use guild_uploader_core as core;
@@ -335,6 +336,68 @@ fn unix_now() -> String {
     format!("{secs}")
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WatchNotice {
+    ok: bool,
+    found: usize,
+    sent: usize,
+    lines: Vec<String>,
+    at: String,
+    status: String,
+    error: String,
+}
+
+/// Upload from the watcher thread or the tray menu. Neither path asks whether
+/// the window is visible. Hiding the window does not stop this thread.
+fn perform_upload(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let prefs = state.prefs.lock().map_err(|e| e.to_string())?.clone();
+    let notice = match do_upload(&prefs) {
+        Ok(upload) => {
+            let mut prefs = state.prefs.lock().map_err(|e| e.to_string())?;
+            prefs.last_upload_at = Some(upload.at.clone());
+            prefs.last_status = Some(upload.status.clone());
+            prefs.last_sent_lines = Some(upload.lines.clone());
+            config::save_prefs(&prefs)?;
+            WatchNotice {
+                ok: true,
+                found: upload.found,
+                sent: upload.sent,
+                lines: upload.lines,
+                at: upload.at,
+                status: upload.status,
+                error: String::new(),
+            }
+        }
+        Err(err) if core::drops_saved_token(&err) => {
+            let _ = config::set_token("");
+            WatchNotice {
+                ok: false,
+                found: 0,
+                sent: 0,
+                lines: Vec::new(),
+                at: String::new(),
+                status: String::new(),
+                error: err.to_string(),
+            }
+        }
+        Err(err) => WatchNotice {
+            ok: false,
+            found: 0,
+            sent: 0,
+            lines: Vec::new(),
+            at: String::new(),
+            status: String::new(),
+            error: err.to_string(),
+        },
+    };
+    let failed = !notice.ok;
+    let message = notice.error.clone();
+    let _ = app.emit("sv-changed", &notice);
+    if failed { Err(message) } else { Ok(()) }
+}
+
 #[tauri::command]
 async fn upload_now(state: State<'_, AppState>) -> Result<UploadResult, String> {
     let prefs = state.prefs.lock().map_err(|e| e.to_string())?.clone();
@@ -496,7 +559,7 @@ async fn start_watch(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
         for res in rx {
             if let Ok(events) = res {
                 if events.iter().any(|event| event.kind == DebouncedEventKind::Any) {
-                    let _ = app.emit("sv-changed", ());
+                    let _ = perform_upload(&app);
                 }
             }
         }
@@ -575,7 +638,10 @@ fn install_tray(app: &tauri::App) -> Result<(), String> {
             }
             "show" => restore_main(app),
             "upload" => {
-                let _ = app.emit("tray-upload", ());
+                let app = app.clone();
+                std::thread::spawn(move || {
+                    let _ = perform_upload(&app);
+                });
             }
             _ => {}
         })

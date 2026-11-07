@@ -12,6 +12,9 @@ assert.strictEqual(conf.app.windows[0].title, conf.productName);
 assert.match(html, new RegExp(`<title>${conf.productName}</title>`));
 assert.match(html, new RegExp(`<h1>${conf.productName}</h1>`));
 assert.strictEqual(conf.app.trayIcon, undefined);
+assert.strictEqual(conf.bundle.windows.nsis.installerHooks, "windows/hooks.nsh");
+assert.strictEqual(conf.productName, "Bloodfang App");
+assert.strictEqual(conf.bundle.publisher, "Bloodfang Guild");
 assert.ok(!html.includes("Guild Uploader"));
 
 console.log("product-name.test.js ok");
