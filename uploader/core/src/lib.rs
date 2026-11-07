@@ -72,26 +72,42 @@ impl std::fmt::Display for UploadError {
 }
 
 /// A string is finished when the site accepted it or already had it.
+/// A per-string refusal (including guild-bank permission) stays unfinished and
+/// does not discard the saved token.
 pub fn done(o: &Outcome) -> bool { o.ok || o.error.as_deref() == Some("duplicate") }
 
-/// 403 text from the types in this batch. Bank and raid stay Officer, GM, or
-/// Webmaster. Anything else is a refusal, not a claim that the whole app is officer-only.
-fn scope_denial(strings: &[String]) -> String {
-    let mut bank = false;
-    let mut raid = false;
-    for s in strings {
-        if s.starts_with("!BF:gbank:") {
-            bank = true;
-        } else if s.starts_with("!BF:attendance:") || s.starts_with("!BF:kills:") || s.starts_with("!BF:signup:") || s.starts_with("!BF:signups:") {
-            raid = true;
+/// Only a no-longer-member `401 {"error":"bad_token"}` drops the saved token.
+pub fn drops_saved_token(err: &UploadError) -> bool {
+    matches!(err, UploadError::BadToken)
+}
+
+/// Map an ingest HTTP status and body. `401` with `bad_token` is the dead-member
+/// case. A guild-bank permission failure arrives as HTTP 200 `results`, so this
+/// does not rewrite HTTP 403 into a batch-wide role sentence.
+pub fn interpret_ingest(status: u16, body: &str) -> Result<Vec<Outcome>, UploadError> {
+    match status {
+        200 => {
+            #[derive(Deserialize)] struct Body { results: Vec<Outcome> }
+            let parsed = serde_json::from_str::<Body>(body).map_err(|e| UploadError::Network(e.to_string()))?;
+            Ok(parsed.results.into_iter().map(redact_outcome).collect())
         }
+        401 => {
+            #[derive(Deserialize)] struct ErrBody { error: String }
+            match serde_json::from_str::<ErrBody>(body) {
+                Ok(b) if b.error == "bad_token" => Err(UploadError::BadToken),
+                _ => Err(UploadError::Http(401, redact_uploader_token(body))),
+            }
+        }
+        429 => Err(UploadError::RateLimited),
+        code => Err(UploadError::Http(code, redact_uploader_token(body))),
     }
-    match (bank, raid) {
-        (true, false) => "Guild bank snapshots need Officer, GM, or Webmaster. Your other uploads still work.".into(),
-        (false, true) => "Raid uploads need Officer, GM, or Webmaster. Your other uploads still work.".into(),
-        (true, true) => "Guild bank snapshots and raid uploads need Officer, GM, or Webmaster. Your other uploads still work.".into(),
-        (false, false) => "The site refused this upload.".into(),
+}
+
+fn redact_outcome(mut o: Outcome) -> Outcome {
+    if let Some(error) = o.error.take() {
+        o.error = Some(redact_uploader_token(&error));
     }
+    o
 }
 
 /// Drop an `upl_` secret if a site error body echoes one. The UI shows this string.
@@ -116,17 +132,8 @@ pub fn post(site: &str, token: &str, strings: &[String]) -> Result<Vec<Outcome>,
         .timeout(std::time::Duration::from_secs(30))
         .send_json(serde_json::json!({ "strings": strings }));
     match res {
-        Ok(r) => {
-            #[derive(Deserialize)] struct Body { results: Vec<Outcome> }
-            r.into_json::<Body>().map(|b| b.results).map_err(|e| UploadError::Network(e.to_string()))
-        }
-        Err(ureq::Error::Status(401, _)) => Err(UploadError::BadToken),
-        Err(ureq::Error::Status(403, r)) => {
-            let _body = redact_uploader_token(&r.into_string().unwrap_or_default());
-            Err(UploadError::Http(403, scope_denial(strings)))
-        }
-        Err(ureq::Error::Status(429, _)) => Err(UploadError::RateLimited),
-        Err(ureq::Error::Status(c, r)) => Err(UploadError::Http(c, redact_uploader_token(&r.into_string().unwrap_or_default()))),
+        Ok(r) => interpret_ingest(200, &r.into_string().unwrap_or_default()),
+        Err(ureq::Error::Status(code, r)) => interpret_ingest(code, &r.into_string().unwrap_or_default()),
         Err(e) => Err(UploadError::Network(e.to_string())),
     }
 }
@@ -166,12 +173,40 @@ mod tests {
         assert!(!done(&Outcome { ty: None, ok: false, error: Some("bad_sig".into()) }));
     }
     #[test]
-    fn bank_denial_is_not_a_blanket_officer_gate() {
-        let bank = scope_denial(&["!BF:gbank:v1:abc".into()]);
-        assert!(bank.contains("Guild bank snapshots need Officer, GM, or Webmaster"));
-        let own = scope_denial(&["!BF:recipes:v1:abc".into()]);
-        assert_eq!(own, "The site refused this upload.");
-        assert!(!own.contains("Officer"));
+    fn bad_token_401_drops_the_saved_token() {
+        let err = interpret_ingest(401, r#"{"error":"bad_token"}"#).unwrap_err();
+        assert!(drops_saved_token(&err));
+        assert!(!err.to_string().contains("upl_"));
+    }
+
+    #[test]
+    fn other_401_does_not_pretend_the_token_is_dead() {
+        let err = interpret_ingest(401, r#"{"error":"nope","token":"upl_secret"}"#).unwrap_err();
+        assert!(!drops_saved_token(&err));
+        assert!(!err.to_string().contains("upl_secret"));
+        assert!(err.to_string().contains("upl_…"));
+    }
+
+    #[test]
+    fn http_200_keeps_a_bank_refusal_on_that_string() {
+        let body = r#"{"results":[{"type":"gbank","ok":false,"error":"site_refused"},{"type":"recipes","ok":true}]}"#;
+        let out = interpret_ingest(200, body).unwrap();
+        assert_eq!(out.len(), 2);
+        assert!(!done(&out[0]));
+        assert_eq!(out[0].error.as_deref(), Some("site_refused"));
+        assert!(done(&out[1]));
+        assert_eq!(out[1].ty.as_deref(), Some("recipes"));
+    }
+
+    #[test]
+    fn http_403_is_not_rewritten_as_an_officer_batch() {
+        let err = interpret_ingest(403, r#"{"error":"forbidden","token":"upl_secret"}"#).unwrap_err();
+        assert!(!drops_saved_token(&err));
+        let text = err.to_string();
+        assert!(!text.contains("Officer"));
+        assert!(!text.contains("Webmaster"));
+        assert!(!text.contains("upl_secret"));
+        assert!(text.contains("403"));
     }
     #[test]
     fn http_errors_do_not_keep_an_uploader_token() {

@@ -10,14 +10,7 @@ const listen = async (event, handler) => {
   if (l) return l(event, handler);
 };
 
-const TYPE_LABELS = {
-  gbank: "guild bank snapshot",
-  recipes: "profession recipes",
-  signup: "raid signup",
-  signups: "raid signup",
-  loot: "loot",
-  attendance: "attendance",
-};
+const linesApi = () => window.uploaderLines;
 
 function formatUploadTime(raw) {
   if (raw == null || raw === "" || raw === "—") return "Never";
@@ -57,17 +50,11 @@ function formatStatus(raw, sent) {
 }
 
 function humanizeLines(lines) {
-  if (!lines?.length) return "";
-  const labels = [];
-  const seen = new Set();
-  for (const line of lines) {
-    const ty = String(line).split(/\s+/)[0].toLowerCase();
-    const label = TYPE_LABELS[ty] || ty.replace(/_/g, " ");
-    if (label === "?" || seen.has(label)) continue;
-    seen.add(label);
-    labels.push(label);
-  }
-  return labels.join(" · ");
+  return linesApi().humanizeUploadLines(lines);
+}
+
+function showRecovery(on) {
+  $("connect-recovery").hidden = !on;
 }
 
 function showErr(panelId, msgId, message, title) {
@@ -234,10 +221,13 @@ function applyToken(status) {
   $("btn-connect").disabled = hasToken || connectInFlight;
   $("btn-connect").hidden = hasToken;
   if (status?.state === "unavailable") {
+    showRecovery(false);
     $("connect-state").textContent = "Couldn't read the saved sign-in. You can try again.";
   } else if (hasToken) {
+    showRecovery(false);
     $("connect-state").textContent = "Signed in. The token stays in the system credential store.";
   } else if (!connectInFlight && $("setup-err").hidden) {
+    showRecovery(false);
     $("connect-state").textContent = "Not signed in.";
   }
   maybeMain();
@@ -322,7 +312,8 @@ function beginWait() {
   $("btn-connect").disabled = true;
   $("btn-switch").hidden = true;
   $("btn-cancel-connect").hidden = false;
-  $("connect-state").textContent = "Waiting for the browser…";
+  $("connect-state").textContent = "Waiting for the browser.";
+  showRecovery(true);
   show("setup");
   setState("waiting");
 }
@@ -336,6 +327,7 @@ function failConnect(message) {
   $("btn-switch").hidden = false;
   const text = String(message);
   const cancelled = /cancelled/i.test(text);
+  showRecovery(cancelled);
   $("connect-state").textContent = cancelled ? "Sign-in didn't finish." : "Nothing was saved.";
   const title = /right role/i.test(text) ? "Couldn't sign in" : "Couldn't continue";
   showErr("setup-err", "setup-err-msg", text, title);
@@ -411,21 +403,25 @@ $("btn-upload").addEventListener("click", async () => {
   try {
     const r = await invoke("upload_now");
     $("last-upload").textContent = formatUploadTime(r.at);
-    $("last-status").textContent = formatStatus(r.status, r.sent);
-    const what = humanizeLines(r.lines);
+    const parts = linesApi().partitionUploadLines(r.lines);
+    $("last-status").textContent = formatStatus(r.status, parts.accepted.length);
+    const what = humanizeLines(parts.accepted);
     if (what) {
       $("what-sent-body").textContent = what;
       $("what-sent").hidden = false;
     }
-    $("upload-ok").textContent = r.sent ? `Sent ${r.sent}.` : "Nothing new.";
-    $("upload-ok").hidden = false;
+    if (parts.accepted.length) {
+      $("upload-ok").textContent = `Sent ${parts.accepted.length}.`;
+      $("upload-ok").hidden = false;
+    }
+    if (parts.refused.length) {
+      const note = linesApi().refusalMessage(parts.refused);
+      showErr("upload-err", "upload-err-msg", note.message, note.title);
+    }
   } catch (e) {
     const msg = String(e);
-    let title = "Upload failed";
-    if (msg.startsWith("Guild bank")) title = "Couldn't send guild bank";
-    else if (msg.startsWith("Raid uploads")) title = "Couldn't send raid data";
-    showErr("upload-err", "upload-err-msg", msg, title);
-    if (/rejected the uploader token|sign in/i.test(msg)) {
+    showErr("upload-err", "upload-err-msg", msg, "Upload failed");
+    if (linesApi().uploadFailureDropsToken(msg)) {
       hasToken = false;
       applyToken({ hasToken: false, state: "absent" });
     }
@@ -527,7 +523,7 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
     mock.prefs.gameFolder = mock.folder;
     mock.prefs.setupDone = true;
   }
-  if (screen === "main" || screen === "denied" || screen === "expired" || screen === "cancelled" || screen === "retry" || screen === "waiting" || screen === "offline") {
+  if (screen === "main" || screen === "denied" || screen === "expired" || screen === "cancelled" || screen === "retry" || screen === "waiting" || screen === "offline" || screen === "recovery") {
     mock.hasToken = screen === "main";
     mock.tokenState = mock.hasToken ? "present" : "absent";
     mock.folder = os === "mac" ? macChoices[0] : winFolder;
@@ -535,7 +531,7 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
     mock.prefs.setupDone = true;
     mock.prefs.lastUploadAt = "1762254000";
     mock.prefs.lastStatus = "sent 2";
-    mock.prefs.lastSentLines = ["gbank accepted", "signup accepted"];
+    mock.prefs.lastSentLines = ["gbank accepted", "recipes accepted"];
     mock.addonInstalled = "0.1.1";
   }
   if (screen === "folder" || screen === "mac-choices") {
@@ -577,9 +573,10 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
         }
         if (cmd === "connect_browser") {
           if (args && args.switchAccount) mock._promptLogin = true;
-          if (screen === "denied" || screen === "retry") throw "Sign in again with a Discord account that has the right role.";
+          if (screen === "denied") throw "Sign-in was declined. Nothing was saved.";
+          if (screen === "retry") throw "Sign-in expired or was already used. Try again.";
           if (screen === "expired") throw "Sign-in expired. Try again.";
-          if (screen === "cancelled") throw "Sign-in cancelled. Nothing was saved.";
+          if (screen === "cancelled" || screen === "recovery") throw "Sign-in cancelled. Nothing was saved.";
           if (screen === "offline") throw "Couldn't reach the site to sign in. Nothing was saved.";
           mock.hasToken = true;
           mock.tokenState = "present";
@@ -659,7 +656,7 @@ if (window.__PREVIEW__) {
   bootPromise.then(() => {
     if (previewScreen === "waiting") {
       setTimeout(() => beginWait(), 400);
-    } else if (["denied", "expired", "cancelled", "offline", "retry"].includes(previewScreen)) {
+    } else if (["denied", "expired", "cancelled", "offline", "retry", "recovery"].includes(previewScreen)) {
       $("btn-connect").disabled = false;
       $("btn-connect").click();
     }

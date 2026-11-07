@@ -323,8 +323,9 @@ fn do_upload(prefs: &config::Prefs) -> Result<UploadResult, core::UploadError> {
         })
         .collect();
     let at = unix_now();
-    let status = if report.sent == 0 { "nothing new".into() } else { format!("sent {}", report.sent) };
-    Ok(UploadResult { found: report.found, sent: report.sent, lines, at, status })
+    let accepted = report.results.iter().filter(|(_, outcome)| core::done(outcome)).count();
+    let status = if report.sent == 0 { "nothing new".into() } else { format!("sent {accepted}") };
+    Ok(UploadResult { found: report.found, sent: accepted, lines, at, status })
 }
 
 fn unix_now() -> String {
@@ -346,9 +347,9 @@ async fn upload_now(state: State<'_, AppState>) -> Result<UploadResult, String> 
             config::save_prefs(&prefs)?;
             Ok(upload)
         }
-        Err(core::UploadError::BadToken) => {
+        Err(err) if core::drops_saved_token(&err) => {
             let _ = config::set_token("");
-            Err(core::UploadError::BadToken.to_string())
+            Err(err.to_string())
         }
         Err(err) => Err(err.to_string()),
     }

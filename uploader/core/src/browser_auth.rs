@@ -21,24 +21,33 @@
 //!   Who may consent is the site's token rule (Trial and up can upload their own
 //!   character strings; Officer, GM, and Webmaster stay required for guild bank
 //!   and raid ingest). Do not refuse every non-officer here.
-//!   Optional `prompt=login` (no other prompt value): sign out the current
-//!   Auth.js session first, then continue to Discord sign-in. `callbackUrl`
-//!   must be this same-origin authorize URL with `prompt` removed. Do not
-//!   redirect to the loopback during sign-out, and do not log the code,
-//!   verifier, state, or token. Absent `prompt` reuses the current session.
+//!   Optional `prompt=login` (no other prompt value) is appended only for
+//!   "Sign in with a different account". It does not clear the site session and
+//!   it does not open Discord's account picker. The site clears its own session
+//!   with a protected POST ("Sign out of this site") that this app does not call.
+//!   Absent `prompt` reuses the current browser session. Do not log the code,
+//!   verifier, state, or token.
+//!   A site page that says this account can't sign in does not redirect to the
+//!   loopback. This module keeps waiting until the user cancels or a real
+//!   callback arrives. That page is not `AuthError::Denied` and not `Forbidden`.
 //!   Session allowed to mint a token: consent page, not an automatic approval.
 //!   Consent `POST /api/uploader/oauth/consent` with the Auth.js CSRF token.
 //!   Deny redirects to `{redirect_uri}?error=access_denied&state=`.
+//!   Any other `error` value on that callback is `BadResponse` (nothing stored).
 //!   Approve redirects to `{redirect_uri}?code=&state=` only. Code is 32 bytes,
 //!   one use, 60 seconds. Transaction lives at most 5 minutes.
 //! - `POST /api/uploader/oauth/token` JSON, no cookies:
 //!   `grant_type=authorization_code`, `client_id`, `code`, `redirect_uri`,
 //!   `code_verifier`, `state`. Success `200` `{"token":"upl_…","token_type":"Bearer"}`.
-//!   The server checks PKCE, state, redirect, one-time use, and the role again.
-//!   `400 {"error":"invalid_grant"}`, `403 {"error":"forbidden"}`.
+//!   The server checks PKCE, state, redirect, and one-time use.
+//!   `400 {"error":"invalid_grant"}`. A token-endpoint HTTP 403 is `Forbidden`
+//!   and stores nothing; it is not the website nonmember page.
 //! - Ingest stays `POST /api/uploader/ingest` with `Authorization: Bearer`.
-//!   `401 {"error":"bad_token"}` revokes the local copy. `403 {"error":"forbidden"}`
-//!   does not. No token in a URL, a log line, or the installer.
+//!   `401 {"error":"bad_token"}` (no longer a member) revokes the local copy.
+//!   Guild-bank permission is a per-string `error` inside HTTP 200 `results`,
+//!   not a batch HTTP 403. HTTP 403 is shown redacted and does not revoke the
+//!   token. This client does not invent the per-string error text.
+//!   No token in a URL, a log line, or the installer.
 
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
@@ -618,6 +627,8 @@ mod tests {
                 format!("{redirect}?code=abc123&state={state}")
             } else if query == "denied" {
                 format!("{redirect}?error=access_denied&state={state}")
+            } else if query == "other-error" {
+                format!("{redirect}?error=server_error&state={state}")
             } else if query == "leak" {
                 format!("{redirect}?access_token=upl_secret&state={state}")
             } else if query == "wrong-state" {
@@ -720,6 +731,24 @@ mod tests {
         .unwrap_err();
         assert_eq!(err, AuthError::BadResponse);
         assert!(!format!("{err}").contains("not-a-token"));
+    }
+
+    #[test]
+    fn other_callback_error_is_not_a_denial() {
+        let mock = spawn_mock("ok");
+        let err = connect_loopback(
+            &mock.base,
+            Duration::from_secs(5),
+            &AtomicBool::new(false), false,
+            drive_browser(mock.challenge.clone(), "other-error".into()),
+        )
+        .unwrap_err();
+        assert_eq!(err, AuthError::BadResponse);
+        assert_ne!(err, AuthError::Denied);
+        assert_ne!(err, AuthError::Forbidden);
+        assert_eq!(mock.hits.load(Ordering::SeqCst), 0);
+        assert!(!err.to_string().contains("right role"));
+        assert!(!err.to_string().contains("upl_"));
     }
 
     #[test]
