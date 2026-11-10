@@ -3,7 +3,7 @@
 The release version comes from the `addon-v<version>` tag (see `.github/workflows/addon-release.yml`); nothing in the
 source carries it. Pushing the tag publishes the release.
 
-## 0.2.0 (unreleased)
+## 0.2.0 (Nov 9, 2026)
 - Reads the guild's rank names in game (`GuildControlGetNumRanks` / `GuildControlGetRankName`, 1-based, Guild Master
   first) on `PLAYER_GUILD_UPDATE` and `GUILD_ROSTER_UPDATE`, and keeps them in SavedVariables as
   `guild = { name, ranks, t }` (`t` = server time when read). Calls are guarded, so a client without them captures nothing.
