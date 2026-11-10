@@ -5,10 +5,15 @@ description = "Desktop uploader and addon updater. Files only; never touches the
 authors = ["raid group"]
 edition = "2021"
 rust-version = "1.90"
+default-run = "guild-uploader-app"
 
 [lib]
 name = "guild_uploader_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "guild-uploader-app"
+path = "src/main.rs"
 
 [[bin]]
 name = "guild-uploader-verify-update"
