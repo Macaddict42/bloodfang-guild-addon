@@ -156,8 +156,18 @@ function setFolderUi(showUi, choices) {
   }
 }
 
+let lastUploadAt = null;
+
+function setLastChecked(uploadAt, checkedAt) {
+  const show = linesApi().showLastChecked(uploadAt, checkedAt);
+  $("last-checked-row").hidden = !show;
+  if (show) $("last-checked").textContent = formatUploadTime(checkedAt);
+}
+
 function fillMainFromPrefs(prefs) {
   $("last-upload").textContent = formatUploadTime(prefs.lastUploadAt);
+  lastUploadAt = prefs.lastUploadAt || null;
+  setLastChecked(prefs.lastUploadAt, prefs.lastCheckedAt);
   $("last-status").textContent = formatStatus(prefs.lastStatus);
   $("addon-ver").textContent = prefs.lastAddonVersion || "—";
   const what = humanizeLines(prefs.lastSentLines);
@@ -414,7 +424,15 @@ $("btn-disconnect").addEventListener("click", async () => {
 
 function showUploadSuccess(r) {
   clearErr("upload-err");
+  if (r.requested === false) {
+    // Nothing was sent: "Last upload" keeps the time of the last real upload.
+    setLastChecked(lastUploadAt, r.at);
+    if ($("last-status").textContent === "Waiting for SavedVariables") $("last-status").textContent = "Nothing new";
+    return;
+  }
+  lastUploadAt = r.at || lastUploadAt;
   $("last-upload").textContent = formatUploadTime(r.at);
+  setLastChecked(r.at, null);
   const parts = linesApi().partitionUploadLines(r.lines);
   $("last-status").textContent = formatStatus(r.status, parts.accepted.length);
   const what = humanizeLines(parts.accepted);

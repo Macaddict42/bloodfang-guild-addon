@@ -33,6 +33,8 @@ pub struct SavedUpload {
     pub lines: Vec<String>,
     pub at: String,
     pub status: String,
+    /// Whether this pass sent anything. Only then is it the "Last upload"; otherwise it is "Last checked".
+    pub requested: bool,
 }
 
 #[derive(Debug)]
@@ -52,6 +54,7 @@ pub fn debounced_change_should_upload(kinds: impl IntoIterator<Item = DebouncedE
 pub fn upload_saved_variables(
     game_folder: &str,
     addon_name: &str,
+    guild_name: &str,
     site: &str,
     token: &str,
     state_path: &Path,
@@ -62,11 +65,13 @@ pub fn upload_saved_variables(
             "No SavedVariables for {addon_name} yet. Log in with the addon, then /reload."
         )));
     }
-    Ok(saved_from_report(core::run(&files, site, token, state_path)?))
+    let ranks = core::RanksSource { addon: addon_name, guild: guild_name };
+    Ok(saved_from_report(core::run_all(&files, site, token, state_path, Some(ranks))?))
 }
 
 pub fn saved_from_report(report: core::Report) -> SavedUpload {
-    let lines: Vec<String> = report
+    let requested = report.requested();
+    let mut lines: Vec<String> = report
         .results
         .iter()
         .map(|(_, outcome)| {
@@ -77,14 +82,21 @@ pub fn saved_from_report(report: core::Report) -> SavedUpload {
             )
         })
         .collect();
-    let accepted = report.results.iter().filter(|(_, outcome)| core::done(outcome)).count();
-    let status = if report.sent == 0 { "nothing new".into() } else { format!("sent {accepted}") };
+    let mut accepted = report.results.iter().filter(|(_, outcome)| core::done(outcome)).count();
+    if let Some(ranks) = &report.ranks {
+        lines.push(ranks.line());
+        if matches!(ranks, core::RanksOutcome::Stored(_)) {
+            accepted += 1;
+        }
+    }
+    let status = if !requested { "nothing new".into() } else { format!("sent {accepted}") };
     SavedUpload {
         found: report.found,
         sent: accepted,
         lines,
         at: unix_now(),
         status,
+        requested,
     }
 }
 
@@ -99,9 +111,14 @@ pub fn finish_upload(prefs: &mut Prefs, seq: &UploadSeq, started: u64, result: R
     }
     match result {
         Ok(upload) => {
-            prefs.last_upload_at = Some(upload.at.clone());
-            prefs.last_status = Some(upload.status.clone());
-            prefs.last_sent_lines = Some(upload.lines.clone());
+            if upload.requested {
+                prefs.last_upload_at = Some(upload.at.clone());
+                prefs.last_sent_lines = Some(upload.lines.clone());
+                prefs.last_status = Some(upload.status.clone());
+            } else if prefs.last_status.is_none() {
+                prefs.last_status = Some(upload.status.clone());
+            }
+            prefs.last_checked_at = Some(upload.at.clone());
             seq.applied_success.store(started, Ordering::SeqCst);
             Finish::Applied(upload)
         }
@@ -197,7 +214,62 @@ mod tests {
             lines: lines.iter().map(|s| (*s).to_string()).collect(),
             at: "200".into(),
             status: status.into(),
+            requested: true,
         }
+    }
+
+    #[test]
+    fn a_pass_that_sends_nothing_is_last_checked_not_last_upload() {
+        let seq = UploadSeq::default();
+        let started = seq.note_start();
+        let mut prefs = prefs_with_success();
+        let quiet = SavedUpload { found: 0, sent: 0, lines: vec![], at: "300".into(), status: "nothing new".into(), requested: false };
+        assert!(matches!(finish_upload(&mut prefs, &seq, started, Ok(quiet)), Finish::Applied(_)));
+        assert_eq!(prefs.last_upload_at.as_deref(), Some("100"));
+        assert_eq!(prefs.last_checked_at.as_deref(), Some("300"));
+        assert_eq!(prefs.last_status.as_deref(), Some("sent 2"));
+        assert_eq!(prefs.last_sent_lines.as_deref(), Some(["recipes accepted".to_string(), "gbank accepted".to_string()].as_slice()));
+    }
+
+    #[test]
+    fn rank_names_count_as_an_upload_with_a_clear_line() {
+        let stored = core::Report { found: 0, sent: 0, results: vec![], ranks: Some(core::RanksOutcome::Stored("stored".into())) };
+        let up = saved_from_report(stored);
+        assert!(up.requested);
+        assert_eq!((up.status.as_str(), up.lines.clone()), ("sent 1", vec!["ranks accepted".to_string()]));
+        let refused = core::Report { found: 0, sent: 0, results: vec![], ranks: Some(core::RanksOutcome::Refused(core::ranks::NEEDS_OFFICER.into())) };
+        let up = saved_from_report(refused);
+        assert_eq!(up.status, "sent 0");
+        assert_eq!(up.lines, vec!["ranks Rank names need a Guild Master or officer character linked".to_string()]);
+        let none = saved_from_report(core::Report { found: 0, sent: 0, results: vec![], ranks: None });
+        assert!(!none.requested);
+        assert_eq!(none.status, "nothing new");
+    }
+
+    #[test]
+    fn two_account_files_send_rank_names_through_the_app_path() {
+        let dir = tempfile_dir("gu-ranks");
+        for acct in ["300769113#1", "300769113#2"] {
+            let file = dir.join("WTF").join("Account").join(acct).join("SavedVariables").join("Example.lua");
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, "ExampleDB = {\n\t[\"chars\"] = {\n\t},\n\t[\"guild\"] = {\n\t\t[\"t\"] = 1794112233,\n\t\t[\"name\"] = \"Example\",\n\t\t[\"ranks\"] = {\n\t\t\t\"Guild Master\", -- [1]\n\t\t\t\"Officer\", -- [2]\n\t\t\t\"Veteran\", -- [3]\n\t\t\t\"Member\", -- [4]\n\t\t\t\"Initiate\", -- [5]\n\t\t},\n\t},\n\t[\"outbox\"] = {\n\t},\n}\n").unwrap();
+        }
+        let state = dir.join("state.json");
+        let fixture = serve(403, r#"{"error":"forbidden"}"#);
+        let up = upload_saved_variables(&dir.display().to_string(), "Example", "Example", &fixture.site, "upl_fixture_not_secret", &state).unwrap();
+        let request = fixture.seen.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(request.starts_with("POST /api/uploader/ranks "));
+        assert!(request.contains("\"ranks\":[\"Guild Master\",\"Officer\",\"Veteran\",\"Member\",\"Initiate\"]"));
+        assert!(up.requested);
+        assert_eq!(up.lines, vec![format!("ranks {}", core::ranks::NEEDS_OFFICER)]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn tempfile_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[test]
@@ -400,6 +472,7 @@ mod tests {
         let uploaded = upload_saved_variables(
             &dir.display().to_string(),
             "Addon",
+            "",
             &fixture.site,
             "upl_fixture_not_secret",
             &state,
@@ -433,7 +506,7 @@ mod tests {
             200,
             r#"{"results":[{"type":"gbank","ok":false,"error":"site_refused"},{"type":"recipes","ok":true}]}"#,
         );
-        let uploaded = upload_saved_variables(&dir.display().to_string(), "Addon", &fixture.site, "upl_fixture_not_secret", &state).unwrap();
+        let uploaded = upload_saved_variables(&dir.display().to_string(), "Addon", "", &fixture.site, "upl_fixture_not_secret", &state).unwrap();
         assert_eq!(uploaded.status, "sent 1");
         assert!(uploaded.lines.iter().any(|line| line == "gbank site_refused"));
         assert!(uploaded.lines.iter().any(|line| line == "recipes accepted"));
@@ -458,7 +531,7 @@ mod tests {
         let state = std::env::temp_dir().join(format!("gu-token-state-{}.json", std::process::id()));
         let _ = fs::remove_file(&state);
         let fixture = serve(401, r#"{"error":"bad_token","token":"upl_fixture_not_secret"}"#);
-        let err = upload_saved_variables(&dir.display().to_string(), "Addon", &fixture.site, "upl_fixture_not_secret", &state).unwrap_err();
+        let err = upload_saved_variables(&dir.display().to_string(), "Addon", "", &fixture.site, "upl_fixture_not_secret", &state).unwrap_err();
         assert!(core::drops_saved_token(&err));
         assert!(!err.to_string().contains("upl_fixture_not_secret"));
         let seq = UploadSeq::default();

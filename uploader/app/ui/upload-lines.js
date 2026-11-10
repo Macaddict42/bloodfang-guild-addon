@@ -12,6 +12,7 @@
     signups: "raid signup",
     loot: "loot",
     attendance: "attendance",
+    ranks: "guild rank names",
   };
 
   function partitionUploadLines(lines) {
@@ -48,7 +49,9 @@
     }).join(" ");
     const title = refused.some((row) => row.ty === "gbank")
       ? "Couldn't send guild bank"
-      : "Some strings were not accepted";
+      : refused.every((row) => row.ty === "ranks")
+        ? "Rank names not sent"
+        : "Some strings were not accepted";
     return { title, message, dropsToken: false };
   }
 
@@ -56,8 +59,17 @@
     return /rejected the uploader token/i.test(String(message));
   }
 
+  /* "Last checked" shows only when a later pass sent nothing (unix-second strings). */
+  function showLastChecked(uploadAt, checkedAt) {
+    const c = Number(checkedAt);
+    if (!checkedAt || !Number.isFinite(c)) return false;
+    const u = Number(uploadAt);
+    return !uploadAt || !Number.isFinite(u) || c > u;
+  }
+
   return {
     TYPE_LABELS,
+    showLastChecked,
     partitionUploadLines,
     humanizeUploadLines,
     refusalMessage,

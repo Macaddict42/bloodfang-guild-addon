@@ -27,6 +27,9 @@ pub struct Prefs {
     pub addon_name: String,
     pub start_at_login: bool,
     pub last_upload_at: Option<String>,
+    /// Last pass that looked for new data, whether or not it sent anything.
+    #[serde(default)]
+    pub last_checked_at: Option<String>,
     pub last_status: Option<String>,
     /// Plain outcome lines from the last upload (e.g. "gbank accepted"), for UI "what was sent".
     #[serde(default)]

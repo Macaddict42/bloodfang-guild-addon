@@ -1,6 +1,6 @@
 [package]
 name = "guild-uploader-app"
-version = "0.1.1"
+version = "0.1.2"
 description = "Desktop uploader and addon updater. Files only; never touches the game process."
 authors = ["raid group"]
 edition = "2021"

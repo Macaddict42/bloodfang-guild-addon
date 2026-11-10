@@ -44,6 +44,7 @@ jobs:
         env:
           SITE_URL: ${{ vars.SITE_URL }}
           ADDON_NAME: ${{ vars.ADDON_NAME }}
+          GUILD_NAME: ${{ vars.GUILD_NAME }}
           GITHUB_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -55,6 +56,7 @@ jobs:
           # release build still has an address when the variable is empty.
           export SITE_URL="${SITE_URL:-$DEFAULT_SITE}"
           export ADDON_NAME="${ADDON_NAME:-}"
+          export GUILD_NAME="${GUILD_NAME:-}"
           export GITHUB_REPO="${GITHUB_REPO:-$GITHUB_REPOSITORY}"
           cargo tauri build --bundles "${{ matrix.bundles }}" --target "${{ matrix.target }}"
       - name: Windows installer hook and launcher smoke
@@ -69,7 +71,11 @@ jobs:
           installer=$(find target -path '*bundle*' -name '*.exe' ! -name '*uninstall*' | head -1)
           echo "installer=$installer"
           test -n "$installer"
-          exe=$(find target -path '*release/guild-uploader-app.exe' -type f | head -1)
+          # The packaged executable is named by tauri.conf.json mainBinaryName, not the Cargo bin.
+          main=$(node -p "require('./app/src-tauri/tauri.conf.json').mainBinaryName")
+          test -n "$main"
+          exe=$(find target -path "*/x86_64-pc-windows-msvc/release/$main.exe" -type f | head -1)
+          if [ -z "$exe" ]; then exe=$(find target -path "*/release/$main.exe" -type f | head -1); fi
           echo "exe=$exe"
           test -n "$exe"
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$GITHUB_WORKSPACE/uploader/app/src-tauri/windows/launch-smoke.ps1" -Exe "$exe"

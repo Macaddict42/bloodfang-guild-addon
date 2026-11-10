@@ -10,3 +10,9 @@ pub fn site_url() -> Result<String, String> {
 pub fn site_host() -> String {
     site_url().map(|url| guild_uploader_core::browser_auth::site_host(&url)).unwrap_or_default()
 }
+
+/// Guild whose rank names this build sends, from `GUILD_NAME` at build time. Empty sends any
+/// guild's block and leaves the check to the site.
+pub fn guild_name() -> String {
+    option_env!("GUILD_NAME").unwrap_or("").trim().to_string()
+}

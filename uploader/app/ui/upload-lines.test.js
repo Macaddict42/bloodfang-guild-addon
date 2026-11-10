@@ -34,3 +34,19 @@ assert.strictEqual(uploadFailureDropsToken("guild bank snapshot: site_refused. T
 assert.strictEqual(uploadFailureDropsToken("Sign in again with a Discord account that has the right role."), false);
 
 console.log("upload-lines.test.js ok");
+
+// Rank names (uploader 0.1.2)
+{
+  const api = require("./upload-lines.js");
+  assert.strictEqual(api.humanizeUploadLines(["ranks accepted"]), "guild rank names");
+  const parts = api.partitionUploadLines(["ranks Rank names need a Guild Master or officer character linked"]);
+  assert.strictEqual(parts.accepted.length, 0);
+  const note = api.refusalMessage(parts.refused);
+  assert.strictEqual(note.title, "Rank names not sent");
+  assert.ok(note.message.includes("guild rank names: Rank names need a Guild Master or officer character linked."));
+  assert.strictEqual(note.dropsToken, false);
+  assert.strictEqual(api.showLastChecked("100", "200"), true);
+  assert.strictEqual(api.showLastChecked("200", "200"), false);
+  assert.strictEqual(api.showLastChecked(null, "200"), true);
+  assert.strictEqual(api.showLastChecked("100", null), false);
+}

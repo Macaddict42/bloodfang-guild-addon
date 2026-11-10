@@ -8,6 +8,7 @@ Build-time non-secret defaults:
 
 - `SITE_URL` — baked site address. CI uses the repo variable when it is set, otherwise `uploader/app/site.url`. Users do not type it.
 - `ADDON_NAME` — SavedVariables / AddOns folder name
+- `GUILD_NAME` — guild whose in-game rank names are sent to `POST /api/uploader/ranks` (empty sends any guild's block; the site checks it)
 - `GITHUB_REPO` — `owner/name` for release lookups
 
 Sign-in opens the system browser. The site session approves an uploader token, which is stored only in the OS credential store (Windows Credential Manager / macOS Keychain). Prefs JSON never contains it. The usual Windows game folder is detected. Start at login is on for a first install; a stored choice, including off, is kept.

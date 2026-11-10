@@ -330,6 +330,7 @@ struct UploadResult {
     lines: Vec<String>,
     at: String,
     status: String,
+    requested: bool,
 }
 
 fn do_upload(prefs: &config::Prefs) -> Result<upload_gate::SavedUpload, core::UploadError> {
@@ -339,7 +340,7 @@ fn do_upload(prefs: &config::Prefs) -> Result<upload_gate::SavedUpload, core::Up
         Err(err) => return Err(core::UploadError::Network(err)),
     };
     let site = baked::site_url().map_err(|err| core::UploadError::Network(err))?;
-    upload_gate::upload_saved_variables(&prefs.game_folder, &prefs.addon_name, &site, &token, &config::state_path(prefs))
+    upload_gate::upload_saved_variables(&prefs.game_folder, &prefs.addon_name, &baked::guild_name(), &site, &token, &config::state_path(prefs))
 }
 
 fn upload_result(upload: &upload_gate::SavedUpload) -> UploadResult {
@@ -349,6 +350,7 @@ fn upload_result(upload: &upload_gate::SavedUpload) -> UploadResult {
         lines: upload.lines.clone(),
         at: upload.at.clone(),
         status: upload.status.clone(),
+        requested: upload.requested,
     }
 }
 
@@ -359,6 +361,7 @@ fn stored_result(prefs: &config::Prefs) -> UploadResult {
         lines: prefs.last_sent_lines.clone().unwrap_or_default(),
         at: prefs.last_upload_at.clone().unwrap_or_default(),
         status: prefs.last_status.clone().unwrap_or_else(|| "nothing new".into()),
+        requested: true,
     }
 }
 
@@ -370,12 +373,13 @@ fn notice_ok(upload: &upload_gate::SavedUpload) -> WatchNotice {
         lines: upload.lines.clone(),
         at: upload.at.clone(),
         status: upload.status.clone(),
+        requested: upload.requested,
         error: String::new(),
     }
 }
 
 fn notice_err(message: String) -> WatchNotice {
-    WatchNotice { ok: false, found: 0, sent: 0, lines: Vec::new(), at: String::new(), status: String::new(), error: message }
+    WatchNotice { ok: false, found: 0, sent: 0, lines: Vec::new(), at: String::new(), status: String::new(), requested: false, error: message }
 }
 
 #[derive(Serialize)]
@@ -387,6 +391,7 @@ struct WatchNotice {
     lines: Vec<String>,
     at: String,
     status: String,
+    requested: bool,
     error: String,
 }
 
