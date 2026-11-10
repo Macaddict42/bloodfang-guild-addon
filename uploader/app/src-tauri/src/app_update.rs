@@ -198,7 +198,8 @@ pub fn launch_verified_installer(bytes: &[u8]) -> Result<(), String> {
     }
     let path = std::env::temp_dir().join("guild-uploader-update.bin");
     std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-    std::process::Command::new(&path).spawn().map_err(|e| format!("{e}"))?;
+    // CREATE_NO_WINDOW suppresses a console. A GUI installer still shows its own windows.
+    guild_uploader_core::background_command(&path).spawn().map_err(|e| format!("{e}"))?;
     Ok(())
 }
 

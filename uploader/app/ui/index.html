@@ -3,14 +3,17 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Bloodfang App</title>
+  <title>Bloodfang Uploader</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div id="app">
     <header class="top">
-      <h1>Bloodfang App</h1>
-      <p class="sub">Reads the addon's saved files (SavedVariables) only. Never touches the game process.</p>
+      <h1>Bloodfang Uploader</h1>
+      <div class="lede">
+        <p class="sub">Reads the addon's saved files (SavedVariables) only.</p>
+        <p class="sub sub-rule">Never touches the game process.</p>
+      </div>
     </header>
 
     <section id="screen-boot" class="screen" aria-label="Opening" aria-live="polite">
@@ -95,6 +98,7 @@
     </section>
   </div>
   <script src="upload-lines.js"></script>
+  <script src="window-fit.js"></script>
   <script src="connect-recovery.js"></script>
   <script src="app.js"></script>
 </body>

@@ -24,3 +24,9 @@ socket2 = "0.5"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 semver = "1"
 tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_System_Diagnostics_ToolHelp",
+] }

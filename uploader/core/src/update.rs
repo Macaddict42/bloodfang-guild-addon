@@ -6,8 +6,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct AddonRelease {
@@ -141,8 +140,8 @@ pub fn installed_version(addons_dir: &Path, addon_name: &str) -> Option<Version>
 pub fn addons_dir(game_dir: &Path) -> PathBuf { game_dir.join("Interface").join("AddOns") }
 
 /// Download, verify SHA-256, install into Interface/AddOns/<name>/, backup + rollback on failure.
-/// Returns the installed version string. `attest_repo` enables best-effort `gh attestation verify`.
-pub fn install_addon(rel: &AddonRelease, game_dir: &Path, addon_name: &str, attest_repo: Option<&str>) -> Result<String, UpdateError> {
+/// Returns the installed version string. The archive is checked against SHA256SUMS in this process.
+pub fn install_addon(rel: &AddonRelease, game_dir: &Path, addon_name: &str) -> Result<String, UpdateError> {
     let zip_bytes = get_bytes(&rel.zip_url)?;
     let sums = match &rel.sums_url {
         Some(u) => get(u)?,
@@ -175,15 +174,6 @@ pub fn install_addon(rel: &AddonRelease, game_dir: &Path, addon_name: &str, atte
         return Err(UpdateError::Io(e));
     }
     let _ = fs::remove_dir_all(&backup);
-
-    if let Some(repo) = attest_repo {
-        // Best-effort: write zip to a temp file and run gh if present.
-        let zpath = tmp.path().join(&rel.zip_name);
-        if fs::write(&zpath, &zip_bytes).is_ok() {
-            let _ = Command::new("gh").args(["attestation", "verify", zpath.to_str().unwrap_or(""), "-R", repo]).status();
-        }
-    }
-    
     Ok(rel.version.to_string())
 }
 
@@ -271,53 +261,12 @@ pub fn latest_app(repo: &str) -> Result<Option<AddonRelease>, UpdateError> {
     Ok(best)
 }
 
-/// Wait until `cmd` exits or `budget` elapses. On expiry the child is killed.
-/// `None` means it did not finish in time (or could not be spawned).
-pub fn command_output_within(mut cmd: Command, budget: Duration) -> Option<std::process::Output> {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
-    let mut child = cmd.spawn().ok()?;
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return child.wait_with_output().ok(),
-            Ok(None) if start.elapsed() >= budget => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(30)),
-            Err(_) => return None,
-        }
-    }
-}
-
-/// Heuristic: a process named like the client is running (for the /reload warning only).
-/// The check is killed if it exceeds 2 seconds. It never opens the game.
-pub fn game_seems_running() -> bool {
-    let budget = Duration::from_secs(2);
-    #[cfg(target_os = "windows")]
-    {
-        let cmd = Command::new("tasklist");
-        command_output_within(cmd, budget)
-            .map(|o| {
-                let s = String::from_utf8_lossy(&o.stdout).to_ascii_lowercase();
-                s.contains("wow.exe") || s.contains("wowclassic.exe")
-            })
-            .unwrap_or(false)
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let mut cmd = Command::new("pgrep");
-        cmd.args(["-if", "Wow|World of Warcraft"]);
-        command_output_within(cmd, budget).map(|o| o.status.success()).unwrap_or(false)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
     use std::io::Write;
+    use std::net::TcpListener;
+    use std::time::Instant;
 
     #[test]
     fn zip_parent_dir_is_rejected() {
@@ -344,18 +293,6 @@ mod tests {
     }
 
     #[test]
-    fn command_budget_kills_a_slow_child() {
-        let start = Instant::now();
-        let mut cmd = Command::new("sleep");
-        cmd.arg("30");
-        let out = command_output_within(cmd, Duration::from_millis(250));
-        let elapsed = start.elapsed();
-        assert!(out.is_none(), "sleep should be killed");
-        assert!(elapsed < Duration::from_secs(2), "budget elapsed {elapsed:?}");
-        eprintln!("MEASURE command_budget elapsed_ms={}", elapsed.as_millis());
-    }
-
-    #[test]
     fn http_read_timeout_returns_without_hanging() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -373,12 +310,4 @@ mod tests {
         eprintln!("MEASURE http_read_timeout elapsed_ms={}", elapsed.as_millis());
     }
 
-    #[test]
-    fn game_check_on_this_machine_is_bounded() {
-        let start = Instant::now();
-        let _running = game_seems_running();
-        let elapsed = start.elapsed();
-        assert!(elapsed < Duration::from_secs(3), "game check elapsed {elapsed:?}");
-        eprintln!("MEASURE game_seems_running elapsed_ms={}", elapsed.as_millis());
-    }
 }

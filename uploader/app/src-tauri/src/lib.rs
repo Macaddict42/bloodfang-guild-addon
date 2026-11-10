@@ -545,7 +545,7 @@ async fn update_addon(state: State<'_, AppState>) -> Result<String, String> {
     let repo = defaults_repo();
     let version = tauri::async_runtime::spawn_blocking(move || {
         let release = core::latest_addon(&repo, &prefs.addon_name).map_err(|e| e.to_string())?.ok_or("no addon release found on GitHub")?;
-        core::install_addon(&release, PathBuf::from(&prefs.game_folder).as_path(), &prefs.addon_name, Some(&repo)).map_err(|e| e.to_string())
+        core::install_addon(&release, PathBuf::from(&prefs.game_folder).as_path(), &prefs.addon_name).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -779,7 +779,7 @@ fn addon_auto_once(app: &AppHandle) -> AddonAutoNotice {
                     message: "Up to date.".into(),
                 };
             };
-            match core::install_addon(&release, PathBuf::from(&prefs.game_folder).as_path(), &prefs.addon_name, Some(&repo)) {
+            match core::install_addon(&release, PathBuf::from(&prefs.game_folder).as_path(), &prefs.addon_name) {
                 Ok(version) => {
                     if let Ok(mut prefs) = state.prefs.lock() {
                         prefs.last_addon_version = Some(version.clone());

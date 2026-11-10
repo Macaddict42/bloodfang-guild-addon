@@ -1,6 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Bloodfang App",
+  "productName": "Bloodfang Uploader",
+  "mainBinaryName": "Bloodfang Uploader",
   "version": "0.1.0",
   "identifier": "com.raidgroup.guilduploader",
   "build": {
@@ -11,10 +12,13 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Bloodfang App",
-        "width": 420,
-        "height": 640,
+        "title": "Bloodfang Uploader",
+        "width": 436,
+        "height": 560,
+        "minWidth": 400,
+        "minHeight": 240,
         "resizable": true,
+        "center": true,
         "visible": true,
         "label": "main"
       }
@@ -37,6 +41,7 @@
       "icons/icon.png"
     ],
     "windows": {
+      "webviewInstallMode": { "type": "skip" },
       "nsis": {
         "installMode": "currentUser",
         "installerHooks": "windows/hooks.nsh"

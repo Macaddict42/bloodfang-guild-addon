@@ -1565,6 +1565,7 @@ dependencies = [
  "socket2 0.5.10",
  "tempfile",
  "ureq",
+ "windows-sys 0.59.0",
  "zip",
 ]
 

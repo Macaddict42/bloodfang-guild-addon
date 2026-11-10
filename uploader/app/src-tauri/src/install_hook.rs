@@ -19,5 +19,11 @@ mod tests {
         assert!(!HOOK.contains("guild-uploader\\"));
         assert!(HOOK.contains("NSIS_HOOK_PREINSTALL"));
         assert!(HOOK.contains("NSIS_HOOK_POSTINSTALL"));
+        assert!(HOOK.contains("NSIS_HOOK_PREUNINSTALL"));
+        assert!(HOOK.contains("Software\\Bloodfang Guild\\Bloodfang App"));
+        assert!(HOOK.contains("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Bloodfang App"));
+        assert!(HOOK.contains("$INSTDIR\\Bloodfang Uploader.exe"));
+        assert!(HOOK.contains("DeleteRegValue HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Run\" \"Bloodfang App\""));
+        assert!(HOOK.contains("DeleteRegValue HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Run\" \"guild-uploader-app\""));
     }
 }

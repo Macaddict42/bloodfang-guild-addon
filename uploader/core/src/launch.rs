@@ -26,8 +26,8 @@ mod tests {
 
     #[test]
     fn spaces_in_the_exe_path_stay_inside_quotes() {
-        let line = quote_windows_run(r"C:\Program Files\Guild Uploader\guild-uploader-app.exe", &["--hidden"]).unwrap();
-        assert_eq!(line, r#""C:\Program Files\Guild Uploader\guild-uploader-app.exe" --hidden"#);
+        let line = quote_windows_run(r"C:\Users\member\AppData\Local\Bloodfang Uploader\Bloodfang Uploader.exe", &["--hidden"]).unwrap();
+        assert_eq!(line, r#""C:\Users\member\AppData\Local\Bloodfang Uploader\Bloodfang Uploader.exe" --hidden"#);
         assert!(line.starts_with('"'));
         assert!(!line.starts_with(r"C:\Program "));
     }

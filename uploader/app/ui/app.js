@@ -540,15 +540,17 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
     mock.prefs.gameFolder = mock.folder;
     mock.prefs.setupDone = true;
   }
-  if (screen === "main" || screen === "app-update" || screen === "addon-busy" || screen === "denied" || screen === "expired" || screen === "cancelled" || screen === "retry" || screen === "waiting" || screen === "offline" || screen === "recovery") {
-    mock.hasToken = screen === "main" || screen === "app-update" || screen === "addon-busy";
+  if (screen === "main" || screen === "no-saved" || screen === "app-update" || screen === "addon-busy" || screen === "denied" || screen === "expired" || screen === "cancelled" || screen === "retry" || screen === "waiting" || screen === "offline" || screen === "recovery") {
+    mock.hasToken = screen === "main" || screen === "no-saved" || screen === "app-update" || screen === "addon-busy";
     mock.tokenState = mock.hasToken ? "present" : "absent";
     mock.folder = os === "mac" ? macChoices[0] : winFolder;
     mock.prefs.gameFolder = mock.folder;
     mock.prefs.setupDone = true;
-    mock.prefs.lastUploadAt = "1762254000";
-    mock.prefs.lastStatus = "sent 2";
-    mock.prefs.lastSentLines = ["gbank accepted", "recipes accepted"];
+    if (screen !== "no-saved") {
+      mock.prefs.lastUploadAt = "1762254000";
+      mock.prefs.lastStatus = "sent 2";
+      mock.prefs.lastSentLines = ["gbank accepted", "recipes accepted"];
+    }
     mock.addonInstalled = screen === "addon-busy" ? "0.1.1" : "0.1.2";
     mock._forceUpdate = false;
   }
@@ -669,6 +671,83 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
     event: { listen: async () => () => {} },
   };
 }
+
+function measureAppBox() {
+  const app = document.getElementById("app");
+  const cs = getComputedStyle(document.body);
+  const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+  const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+  const rect = app.getBoundingClientRect();
+  return { width: rect.width + padX, height: rect.height + padY };
+}
+
+let lastFit = null;
+let fitQueued = false;
+let didCenter = false;
+
+async function fitWindow() {
+  if (window.__PREVIEW__) return;
+  const tauriWindow = window.__TAURI__?.window;
+  if (!tauriWindow?.getCurrentWindow || !tauriWindow.LogicalSize) return;
+  const current = tauriWindow.getCurrentWindow();
+  let maxWidth = 1400;
+  let maxHeight = 900;
+  try {
+    const monitor = await current.currentMonitor();
+    const scale = monitor?.scaleFactor || 1;
+    const area = monitor?.workArea?.size || monitor?.size;
+    if (area?.width && area?.height) {
+      maxWidth = Math.max(400, Math.floor(area.width / scale) - 16);
+      maxHeight = Math.max(240, Math.floor(area.height / scale) - 16);
+    }
+  } catch (_) {}
+  const next = window.uploaderFit.contentFitSize(measureAppBox(), {
+    minWidth: 400,
+    minHeight: 240,
+    maxWidth,
+    maxHeight,
+  });
+  document.documentElement.style.overflow = next.clipped ? "auto" : "hidden";
+  if (!window.uploaderFit.fitChanged(lastFit, next)) return;
+  lastFit = { width: next.width, height: next.height };
+  try {
+    await current.setSize(new tauriWindow.LogicalSize(next.width, next.height));
+    if (!didCenter) {
+      didCenter = true;
+      await current.center();
+    }
+  } catch (_) {}
+}
+
+function scheduleFit() {
+  if (window.__PREVIEW__ || fitQueued) return;
+  fitQueued = true;
+  requestAnimationFrame(() => {
+    fitQueued = false;
+    fitWindow();
+  });
+}
+
+async function syncProductName() {
+  const tauriWindow = window.__TAURI__?.window;
+  if (!tauriWindow?.getCurrentWindow) return;
+  try {
+    const title = await tauriWindow.getCurrentWindow().title();
+    const h1 = document.querySelector("h1");
+    if (title && h1 && h1.textContent !== title) {
+      h1.textContent = title;
+      document.title = title;
+      fillAppUpdateCopy();
+      scheduleFit();
+    }
+  } catch (_) {}
+}
+
+if (window.ResizeObserver && !window.__PREVIEW__) {
+  const fitObserver = new ResizeObserver(() => scheduleFit());
+  fitObserver.observe(document.getElementById("app"));
+}
+syncProductName();
 
 const bootPromise = boot();
 bootPromise.catch((e) => {
