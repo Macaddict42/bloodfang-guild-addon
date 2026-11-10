@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct AddonRelease {
@@ -15,6 +15,8 @@ pub struct AddonRelease {
     pub zip_name: String,
     pub zip_url: String,
     pub sums_url: Option<String>,
+    /// Detached signature of the archive or installer bytes, when the release has one.
+    pub sig_url: Option<String>,
 }
 
 #[derive(Debug)]
@@ -53,14 +55,29 @@ pub fn latest_addon(repo: &str, addon_name: &str) -> Result<Option<AddonRelease>
         let zip = r.assets.iter().find(|a| a.name == format!("{addon_name}-{ver}.zip") || a.name.starts_with(&format!("{addon_name}-")) && a.name.ends_with(".zip"));
         let Some(zip) = zip else { continue };
         let sums = r.assets.iter().find(|a| a.name == "SHA256SUMS").map(|a| a.browser_download_url.clone());
-        let cand = AddonRelease { tag: r.tag_name.clone(), version: ver.clone(), zip_name: zip.name.clone(), zip_url: zip.browser_download_url.clone(), sums_url: sums };
+        let sig_url = signature_url(&r.assets, &zip.name);
+        let cand = AddonRelease { tag: r.tag_name.clone(), version: ver.clone(), zip_name: zip.name.clone(), zip_url: zip.browser_download_url.clone(), sums_url: sums, sig_url };
         if best.as_ref().map(|b| &cand.version > &b.version).unwrap_or(true) { best = Some(cand); }
     }
     Ok(best)
 }
 
+fn http_agent(overall: Duration) -> ureq::Agent {
+    let connect = Duration::from_secs(5).min(overall);
+    ureq::AgentBuilder::new()
+        .timeout_connect(connect)
+        .timeout_read(overall)
+        .timeout(overall)
+        .build()
+}
+
 fn get(url: &str) -> Result<String, UpdateError> {
-    ureq::get(url)
+    get_with(url, &http_agent(Duration::from_secs(20)))
+}
+
+fn get_with(url: &str, agent: &ureq::Agent) -> Result<String, UpdateError> {
+    agent
+        .get(url)
         .set("User-Agent", "guild-uploader")
         .set("Accept", "application/vnd.github+json")
         .call()
@@ -69,14 +86,28 @@ fn get(url: &str) -> Result<String, UpdateError> {
         .map_err(|e| UpdateError::Network(e.to_string()))
 }
 
+fn signature_url(assets: &[GhAsset], asset_name: &str) -> Option<String> {
+    let expected = format!("{asset_name}.sig");
+    assets.iter().find(|a| a.name == expected).map(|a| a.browser_download_url.clone())
+}
+
+pub fn download_text(url: &str) -> Result<String, UpdateError> {
+    get(url)
+}
+
+pub fn download_bytes(url: &str) -> Result<Vec<u8>, UpdateError> {
+    get_bytes(url)
+}
+
 fn get_bytes(url: &str) -> Result<Vec<u8>, UpdateError> {
-    let mut r = ureq::get(url)
+    let r = http_agent(Duration::from_secs(30))
+        .get(url)
         .set("User-Agent", "guild-uploader")
         .call()
         .map_err(|e| UpdateError::Network(e.to_string()))?
         .into_reader();
     let mut buf = vec![];
-    r.read_to_end(&mut buf).map_err(|e| UpdateError::Network(e.to_string()))?;
+    r.take(64 * 1024 * 1024).read_to_end(&mut buf).map_err(|e| UpdateError::Network(e.to_string()))?;
     Ok(buf)
 }
 
@@ -109,8 +140,8 @@ pub fn installed_version(addons_dir: &Path, addon_name: &str) -> Option<Version>
 pub fn addons_dir(game_dir: &Path) -> PathBuf { game_dir.join("Interface").join("AddOns") }
 
 /// Download, verify SHA-256, install into Interface/AddOns/<name>/, backup + rollback on failure.
-/// Returns the installed version string. `attest_repo` enables best-effort `gh attestation verify`.
-pub fn install_addon(rel: &AddonRelease, game_dir: &Path, addon_name: &str, attest_repo: Option<&str>) -> Result<String, UpdateError> {
+/// Returns the installed version string. The archive is checked against SHA256SUMS in this process.
+pub fn install_addon(rel: &AddonRelease, game_dir: &Path, addon_name: &str) -> Result<String, UpdateError> {
     let zip_bytes = get_bytes(&rel.zip_url)?;
     let sums = match &rel.sums_url {
         Some(u) => get(u)?,
@@ -143,24 +174,25 @@ pub fn install_addon(rel: &AddonRelease, game_dir: &Path, addon_name: &str, atte
         return Err(UpdateError::Io(e));
     }
     let _ = fs::remove_dir_all(&backup);
-
-    if let Some(repo) = attest_repo {
-        // Best-effort: write zip to a temp file and run gh if present.
-        let zpath = tmp.path().join(&rel.zip_name);
-        if fs::write(&zpath, &zip_bytes).is_ok() {
-            let _ = Command::new("gh").args(["attestation", "verify", zpath.to_str().unwrap_or(""), "-R", repo]).status();
-        }
-    }
-    
     Ok(rel.version.to_string())
+}
+
+fn zip_name_stays_inside(name: &Path) -> bool {
+    !name.as_os_str().is_empty()
+        && !name.is_absolute()
+        && name.components().all(|c| matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir))
 }
 
 fn unpack_zip(bytes: &[u8], dest: &Path) -> Result<(), String> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
-        let name = file.mangled_name();
-        let out = dest.join(&name);
+        let raw_name = file.name().to_string();
+        let name = Path::new(&raw_name);
+        if !zip_name_stays_inside(name) {
+            return Err("addon archive tried to leave the addon folder".into());
+        }
+        let out = dest.join(name);
         if file.is_dir() {
             fs::create_dir_all(&out).map_err(|e| e.to_string())?;
         } else {
@@ -215,39 +247,67 @@ pub fn latest_app(repo: &str) -> Result<Option<AddonRelease>, UpdateError> {
         };
         let Some(asset) = asset else { continue };
         let sums = r.assets.iter().find(|a| a.name == "SHA256SUMS").map(|a| a.browser_download_url.clone());
+        let sig_url = signature_url(&r.assets, &asset.name);
         let cand = AddonRelease {
             tag: r.tag_name.clone(),
             version: ver.clone(),
             zip_name: asset.name.clone(),
             zip_url: asset.browser_download_url.clone(),
             sums_url: sums,
+            sig_url,
         };
         if best.as_ref().map(|b| &cand.version > &b.version).unwrap_or(true) { best = Some(cand); }
     }
     Ok(best)
 }
 
-/// Heuristic: a process named like the Forever client is running (for the /reload warning only).
-pub fn game_seems_running() -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("tasklist").output().ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_ascii_lowercase())
-            .map(|s| s.contains("wow.exe") || s.contains("wowclassic.exe") || s.contains("world of warcraft"))
-            .unwrap_or(false)
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Command::new("pgrep").args(["-if", "Wow|World of Warcraft"]).status().map(|s| s.success()).unwrap_or(false)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::time::Instant;
+
+    #[test]
+    fn zip_parent_dir_is_rejected() {
+        use std::io::Write;
+        use zip::write::FileOptions;
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            writer.start_file("../outside.txt", FileOptions::default()).unwrap();
+            writer.write_all(b"no").unwrap();
+            writer.finish().unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let err = unpack_zip(cursor.get_ref(), dir.path()).unwrap_err();
+        assert!(err.contains("leave the addon folder"));
+        assert!(!dir.path().join("outside.txt").exists());
+        assert!(!dir.path().parent().unwrap().join("outside.txt").exists());
+    }
+
     #[test]
     fn sums_parse() {
         let s = "abc123  Addon-0.1.1.zip\ndef  other\n";
         assert_eq!(sums_entry(s, "Addon-0.1.1.zip").as_deref(), Some("abc123"));
     }
+
+    #[test]
+    fn http_read_timeout_returns_without_hanging() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n");
+                std::thread::sleep(Duration::from_secs(30));
+            }
+        });
+        let start = Instant::now();
+        let result = get_with(&format!("http://127.0.0.1:{port}/slow"), &http_agent(Duration::from_millis(400)));
+        let elapsed = start.elapsed();
+        assert!(result.is_err());
+        assert!(elapsed < Duration::from_secs(3), "http elapsed {elapsed:?}");
+        eprintln!("MEASURE http_read_timeout elapsed_ms={}", elapsed.as_millis());
+    }
+
 }

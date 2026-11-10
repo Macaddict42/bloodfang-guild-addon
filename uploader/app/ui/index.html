@@ -3,50 +3,66 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Guild Uploader</title>
+  <title>Bloodfang Uploader</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div id="app">
     <header class="top">
-      <h1>Guild Uploader</h1>
-      <p class="sub">Reads SavedVariables only. Never touches the game process.</p>
+      <h1>Bloodfang Uploader</h1>
+      <div class="lede">
+        <p class="sub">Reads the addon's saved files (SavedVariables) only.</p>
+        <p class="sub sub-rule">Never touches the game process.</p>
+      </div>
     </header>
 
-    <section id="screen-setup" class="screen hidden" aria-label="Setup">
-      <h2>Setup</h2>
-      <label>Site URL
-        <input id="site-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://example.com" />
-      </label>
-      <label>Uploader token
-        <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="upl_…" />
-      </label>
-      <p id="token-saved" class="token-saved" hidden>Token saved. Paste a new one only to replace it.</p>
-      <p id="token-hint" class="hint">Paste a token from the site (Settings → Uploader tokens). Stored in the OS credential store, never in a file.</p>
-      <label>Game folder
-        <div class="row">
-          <input id="game-folder" type="text" autocomplete="off" spellcheck="false" placeholder="…/World of Warcraft/_classic_era_" />
-          <button type="button" id="btn-browse" class="secondary">Browse</button>
+    <section id="screen-boot" class="screen" aria-label="Opening" aria-live="polite">
+      <h2>Opening…</h2>
+      <p class="note">This window stays usable if the network, a saved sign-in, or a folder check is slow.</p>
+    </section>
+
+    <section id="screen-setup" class="screen hidden" aria-label="Sign in">
+      <h2>Sign in</h2>
+      <p id="site-line" class="hint"></p>
+      <p id="connect-state" class="note">Checking saved sign-in…</p>
+      <p id="connect-recovery" class="hint" hidden>If the site says this account can't sign in, this app has not received that. Cancel here first, switch or log out of that Discord account in the browser, then use Sign in with a different account. That button does not open Discord's account list by itself. Sign out on the site only clears the site session.</p>
+      <div id="folder-block" hidden>
+        <p id="folder-hint" class="hint">Couldn't find the usual Forever install. Choose the game folder once — only needed when auto-detect misses. This does not search the whole disk.</p>
+        <p id="game-folder-label" class="detail" hidden></p>
+        <div id="folder-choices" class="candidates" hidden></div>
+        <div class="actions">
+          <button type="button" id="btn-browse" class="secondary">Choose game folder</button>
         </div>
-      </label>
-      <div id="candidates" class="candidates" hidden></div>
+      </div>
       <label class="check"><input id="start-login" type="checkbox" /> Start at login</label>
       <div id="setup-err" class="err" role="alert" hidden>
         <i aria-hidden="true"></i>
         <div>
-          <strong>Couldn't save</strong>
+          <strong id="setup-err-title">Couldn't continue</strong>
           <span id="setup-err-msg"></span>
         </div>
       </div>
       <div class="actions">
-        <button type="button" id="btn-save" class="primary">Save and continue</button>
+        <button type="button" id="btn-connect" class="primary" disabled>Sign in with Discord</button>
+        <button type="button" id="btn-switch" class="secondary" hidden>Sign in with a different account</button>
+        <button type="button" id="btn-cancel-connect" class="secondary" hidden>Cancel</button>
       </div>
     </section>
 
     <section id="screen-main" class="screen hidden" aria-label="Status">
+      <div id="app-update" class="banner" role="dialog" aria-label="App update" hidden>
+        <p id="app-update-copy"></p>
+        <div class="row">
+          <button type="button" id="btn-app-update" class="primary">Update now</button>
+          <button type="button" id="btn-app-later" class="secondary">Later</button>
+        </div>
+        <p id="app-update-note" class="note" hidden></p>
+      </div>
       <h2>Upload</h2>
+      <p class="hint">Saved scans upload on their own.</p>
       <dl class="status">
         <div><dt>Last upload</dt><dd id="last-upload">Never</dd></div>
+        <div id="last-checked-row" hidden><dt>Last checked</dt><dd id="last-checked">—</dd></div>
         <div><dt>Status</dt><dd id="last-status">Waiting for SavedVariables</dd></div>
         <div><dt>Addon</dt><dd id="addon-ver">—</dd></div>
       </dl>
@@ -54,32 +70,25 @@
       <div id="upload-err" class="err" role="alert" hidden>
         <i aria-hidden="true"></i>
         <div>
-          <strong>Upload failed</strong>
+          <strong id="upload-err-title">Upload failed</strong>
           <span id="upload-err-msg"></span>
         </div>
       </div>
       <p id="upload-ok" class="note ok" hidden></p>
+      <p id="folder-main" class="detail" hidden><span class="lbl">Game folder</span><span id="folder-main-body"></span></p>
+      <label class="check"><input id="start-login-main" type="checkbox" /> Start at login</label>
       <div class="actions">
-        <button type="button" id="btn-upload" class="primary">Upload now</button>
-        <button type="button" id="btn-setup" class="secondary">Setup</button>
+        <button type="button" id="btn-change-folder" class="secondary">Change folder</button>
+        <button type="button" id="btn-disconnect" class="secondary">Sign out</button>
       </div>
 
-      <h2 class="mt">Addon update</h2>
+      <h2 class="mt">Addon</h2>
       <dl class="status">
         <div><dt>Installed</dt><dd id="addon-installed">—</dd></div>
         <div><dt>Latest</dt><dd id="addon-latest">—</dd></div>
       </dl>
       <p id="addon-warn" class="warn" hidden>Game looks running — changes take effect after /reload.</p>
       <p id="addon-state" class="note" hidden></p>
-      <div id="addon-banner" class="banner" role="region" aria-label="Update available" hidden>
-        <strong>Update available</strong>
-        <span id="addon-banner-body"></span>
-        <div class="row">
-          <button type="button" id="btn-addon-update" class="primary">Update</button>
-          <button type="button" id="btn-addon-later" class="secondary">Later</button>
-          <button type="button" id="btn-addon-skip" class="secondary">Skip this version</button>
-        </div>
-      </div>
       <div id="addon-err" class="err" role="alert" hidden>
         <i aria-hidden="true"></i>
         <div>
@@ -87,11 +96,11 @@
           <span id="addon-err-msg"></span>
         </div>
       </div>
-      <div id="addon-actions" class="actions">
-        <button type="button" id="btn-check" class="secondary">Check for update</button>
-      </div>
     </section>
   </div>
+  <script src="upload-lines.js"></script>
+  <script src="window-fit.js"></script>
+  <script src="connect-recovery.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

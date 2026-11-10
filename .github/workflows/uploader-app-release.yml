@@ -2,6 +2,7 @@ name: uploader-app
 on:
   push:
     tags: ["uploader-app-v*"]
+  pull_request:
   workflow_dispatch:
     inputs:
       make_draft:
@@ -19,7 +20,7 @@ jobs:
       matrix:
         include:
           - { os: windows-2022, platform: windows, bundles: nsis, target: x86_64-pc-windows-msvc }
-          - { os: macos-14, platform: macos, bundles: dmg, target: universal-apple-darwin }
+          - { os: macos-15, platform: macos, bundles: dmg, target: universal-apple-darwin }
     runs-on: ${{ matrix.os }}
     defaults: { run: { shell: bash } }
     steps:
@@ -43,13 +44,41 @@ jobs:
         env:
           SITE_URL: ${{ vars.SITE_URL }}
           ADDON_NAME: ${{ vars.ADDON_NAME }}
+          GUILD_NAME: ${{ vars.GUILD_NAME }}
           GITHUB_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          export SITE_URL="${SITE_URL:-}"
+          DEFAULT_SITE=""
+          if [ -f "$GITHUB_WORKSPACE/uploader/app/site.url" ]; then
+            DEFAULT_SITE="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/uploader/app/site.url")"
+          fi
+          # Repo variable wins when set. The file is the deployment default so a
+          # release build still has an address when the variable is empty.
+          export SITE_URL="${SITE_URL:-$DEFAULT_SITE}"
           export ADDON_NAME="${ADDON_NAME:-}"
+          export GUILD_NAME="${GUILD_NAME:-}"
           export GITHUB_REPO="${GITHUB_REPO:-$GITHUB_REPOSITORY}"
           cargo tauri build --bundles "${{ matrix.bundles }}" --target "${{ matrix.target }}"
+      - name: Windows installer hook and launcher smoke
+        if: matrix.os == 'windows-2022'
+        working-directory: uploader
+        run: |
+          set -euo pipefail
+          nsi=$(find target -name installer.nsi -path '*nsis*' | head -1)
+          echo "nsi=$nsi"
+          test -n "$nsi"
+          grep -F 'hooks.nsh' "$nsi"
+          installer=$(find target -path '*bundle*' -name '*.exe' ! -name '*uninstall*' | head -1)
+          echo "installer=$installer"
+          test -n "$installer"
+          # The packaged executable is named by tauri.conf.json mainBinaryName, not the Cargo bin.
+          main=$(node -p "require('./app/src-tauri/tauri.conf.json').mainBinaryName")
+          test -n "$main"
+          exe=$(find target -path "*/x86_64-pc-windows-msvc/release/$main.exe" -type f | head -1)
+          if [ -z "$exe" ]; then exe=$(find target -path "*/release/$main.exe" -type f | head -1); fi
+          echo "exe=$exe"
+          test -n "$exe"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$GITHUB_WORKSPACE/uploader/app/src-tauri/windows/launch-smoke.ps1" -Exe "$exe"
       - name: Collect artifacts
         run: |
           set -euo pipefail
@@ -81,6 +110,7 @@ jobs:
           ls -la
       # Signing: SignPath later; unsigned for now (SPEC §18c).
       - uses: actions/attest-build-provenance@v2
+        if: github.event_name != 'pull_request'
         with: { subject-path: "dist/*" }
       - uses: actions/upload-artifact@v4
         with:
@@ -103,6 +133,11 @@ jobs:
           set -euo pipefail
           NOTES="Unsigned for now. Verify SHA256SUMS and provenance: gh attestation verify <file> --repo $GITHUB_REPOSITORY"
           if [[ "$GITHUB_REF" == refs/tags/uploader-app-v* ]]; then
+            # A release published with update-key-signed assets must not be replaced by this unsigned CI build.
+            if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Release $GITHUB_REF_NAME already exists; leaving its assets unchanged."
+              exit 0
+            fi
             gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Uploader app ${GITHUB_REF_NAME#uploader-app-v}" --notes "$NOTES"
           else
             TAG="uploader-app-ci-${GITHUB_RUN_NUMBER}"
