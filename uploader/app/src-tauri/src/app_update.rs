@@ -218,10 +218,61 @@ mod tests {
     }
 
     #[test]
-    fn this_build_has_no_trusted_key() {
-        assert!(trust_from_build().public_key.is_none());
+    fn compiled_trust_fails_closed_or_rejects_tampering() {
         assert!(NO_TRUST_KEY.contains("no trusted update key"));
-        assert!(NO_TRUST_KEY.contains("nothing was downloaded") || NO_TRUST_KEY.contains("Nothing was downloaded"));
+        let trust = trust_from_build();
+        match trust.public_key.clone() {
+            None => {
+                let mut fetches = 0;
+                let result = decide(
+                    Choice::UpdateNow,
+                    &trust,
+                    || { fetches += 1; Err(FetchFail::Network("must not fetch".into())) },
+                    |_| panic!("install must not run"),
+                );
+                assert!(!result.installed);
+                assert!(!result.restarted);
+                assert!(result.message.contains("no trusted update key"));
+                assert_eq!(fetches, 0);
+            }
+            Some(key) => {
+                assert_eq!(key.len(), 32);
+                if let Ok(configured) = std::env::var("GUILD_UPLOADER_UPDATE_PUBKEY") {
+                    assert_eq!(decode_public_key(&configured).as_deref(), Some(key.as_slice()));
+                }
+                let installer = b"private-test-payload";
+                let mut installs = 0;
+                let bad_sig = decide(
+                    Choice::UpdateNow,
+                    &trust,
+                    || Ok(Fetched {
+                        version: "0.1.0-private".into(),
+                        installer: installer.to_vec(),
+                        sha256_hex: core::sha256_hex(installer),
+                        signature: vec![0u8; 64],
+                    }),
+                    |_| { installs += 1; Ok(()) },
+                );
+                assert!(!bad_sig.installed);
+                assert!(!bad_sig.restarted);
+                assert!(bad_sig.message.contains("signature"));
+                assert_eq!(installs, 0);
+                let bad_sha = decide(
+                    Choice::UpdateNow,
+                    &trust,
+                    || Ok(Fetched {
+                        version: "0.1.0-private".into(),
+                        installer: installer.to_vec(),
+                        sha256_hex: "00".into(),
+                        signature: vec![0u8; 64],
+                    }),
+                    |_| { installs += 1; Ok(()) },
+                );
+                assert!(!bad_sha.installed);
+                assert!(bad_sha.message.contains("SHA256SUMS"));
+                assert_eq!(installs, 0);
+            }
+        }
     }
 
     fn fixture() -> (Vec<u8>, Fetched) {

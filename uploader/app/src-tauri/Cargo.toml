@@ -10,6 +10,10 @@ rust-version = "1.90"
 name = "guild_uploader_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "guild-uploader-verify-update"
+path = "src/bin/verify_update.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

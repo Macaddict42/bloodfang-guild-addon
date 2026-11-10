@@ -8,6 +8,35 @@ mod tray_life;
 mod upload_gate;
 
 use guild_uploader_core as core;
+
+/// SHA-256 of the raw public key compiled into this build, when one was configured.
+pub fn compiled_update_key_sha256() -> Option<String> {
+    app_update::trust_from_build().public_key.as_ref().map(|key| core::sha256_hex(key))
+}
+
+pub struct InstallerCheck {
+    pub installed: bool,
+    pub restarted: bool,
+    pub message: String,
+}
+
+/// Production Update now path. The install hook refuses to start a process.
+pub fn check_installer_bytes(version: &str, installer: &[u8], sha256_hex: &str, signature: &[u8]) -> InstallerCheck {
+    let result = app_update::decide(
+        app_update::Choice::UpdateNow,
+        &app_update::trust_from_build(),
+        || {
+            Ok(app_update::Fetched {
+                version: version.to_string(),
+                installer: installer.to_vec(),
+                sha256_hex: sha256_hex.to_string(),
+                signature: signature.to_vec(),
+            })
+        },
+        |_| Err("installation is not authorized".into()),
+    );
+    InstallerCheck { installed: result.installed, restarted: result.restarted, message: result.message }
+}
 use notify_debouncer_mini::new_debouncer;
 use serde::Serialize;
 use std::path::PathBuf;
