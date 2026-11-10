@@ -1,6 +1,6 @@
 [package]
 name = "guild-uploader-app"
-version = "0.1.0"
+version = "0.1.1"
 description = "Desktop uploader and addon updater. Files only; never touches the game process."
 authors = ["raid group"]
 edition = "2021"
@@ -16,8 +16,8 @@ name = "guild-uploader-app"
 path = "src/main.rs"
 
 [[bin]]
-name = "guild-uploader-verify-update"
-path = "src/bin/verify_update.rs"
+name = "updater"
+path = "src/bin/updater.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

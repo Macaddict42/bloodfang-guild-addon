@@ -127,6 +127,11 @@ jobs:
           set -euo pipefail
           NOTES="Unsigned for now. Verify SHA256SUMS and provenance: gh attestation verify <file> --repo $GITHUB_REPOSITORY"
           if [[ "$GITHUB_REF" == refs/tags/uploader-app-v* ]]; then
+            # A release published with update-key-signed assets must not be replaced by this unsigned CI build.
+            if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Release $GITHUB_REF_NAME already exists; leaving its assets unchanged."
+              exit 0
+            fi
             gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Uploader app ${GITHUB_REF_NAME#uploader-app-v}" --notes "$NOTES"
           else
             TAG="uploader-app-ci-${GITHUB_RUN_NUMBER}"

@@ -17,6 +17,7 @@ mod tests {
         assert!(!HOOK.contains("RMDir /r"));
         assert!(!HOOK.contains("DeleteAppData"));
         assert!(!HOOK.contains("guild-uploader\\"));
+        assert!(HOOK.contains("Delete \"$INSTDIR\\guild-uploader-verify-update.exe\""));
         assert!(HOOK.contains("NSIS_HOOK_PREINSTALL"));
         assert!(HOOK.contains("NSIS_HOOK_POSTINSTALL"));
         assert!(HOOK.contains("NSIS_HOOK_PREUNINSTALL"));

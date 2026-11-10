@@ -69,7 +69,7 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: guild-uploader-verify-update --show-trust");
-    eprintln!("       guild-uploader-verify-update --payload FILE --sha256 HEX --signature FILE [--version TEXT]");
+    eprintln!("usage: updater --show-trust");
+    eprintln!("       updater --payload FILE --sha256 HEX --signature FILE [--version TEXT]");
     ExitCode::from(64)
 }

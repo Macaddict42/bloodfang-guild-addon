@@ -49,6 +49,9 @@
   ${EndIf}
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Bloodfang App"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Guild Uploader"
+  ; 0.1.0 shipped the update checker as guild-uploader-verify-update.exe. It is
+  ; updater.exe now, so drop the old copy left in the install directory.
+  Delete "$INSTDIR\guild-uploader-verify-update.exe"
   Pop $R8
 !macroend
 

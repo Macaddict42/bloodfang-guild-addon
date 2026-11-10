@@ -28,4 +28,4 @@ NSIS (Windows) and DMG (macOS) plus SHA256SUMS and provenance attestations.
 SignPath comes later.
 
 ## Releases
-CI tag `uploader-app-vX.Y.Z` builds an unsigned Windows NSIS installer and a **universal** macOS `.dmg` (SPEC §18b). Do not publish without Retik.
+CI tag `uploader-app-vX.Y.Z` builds an unsigned Windows NSIS installer and a **universal** macOS `.dmg` (SPEC §18b). Do not publish without the owner's approval.
