@@ -9,6 +9,9 @@ source carries it. Pushing the tag publishes the release.
   hint use the short command.
 - AddOns list icon: the build converts the guild logo (`ADDON_ICON`, a PNG path or https URL) to a 64x64 TGA and sets
   `## IconTexture` in the TOC. No logo file is in the source.
+- Rank names are read without opening the guild window: a few seconds after login or a /reload the addon requests
+  the guild roster (`C_GuildInfo.GuildRoster` or `GuildRoster`) and reads the ranks again shortly after. The guild
+  window capture stays.
 - `tests/package-check.sh` (run in CI before the build) checks a built zip registers both commands and not `/bf`, and
   ships the icon with the right TOC line.
 

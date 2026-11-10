@@ -79,6 +79,19 @@ for label, mk, shim in [("luajit", LJ.LuaRuntime, False), ("lua51", L51.LuaRunti
     gb_ng = ns.export("gbank", p)
     assert lua.eval("function(ns, s) local _, _, j = ns.decodeString(s) return j.guild == nil end")(ns, gb_ng), label
     lua.execute("E2E_IN_GUILD = true")
+    # Login / entering world: a roster request and a later capture are scheduled (no guild window needed), once per 10 s.
+    sched = lua.eval("""function(ns)
+      local after, asked = {}, 0
+      C_Timer.After = function(d, f) after[#after + 1] = { d = d, f = f } end
+      GuildRoster = function() asked = asked + 1 end
+      GuildaddonDB.guild = nil
+      ns.events.PLAYER_LOGIN[1]()
+      ns.events.PLAYER_ENTERING_WORLD[1](true, false)
+      local n = #after
+      for _, a in ipairs(after) do a.f() end
+      return n, asked, GuildaddonDB.guild ~= nil
+    end""")(ns)
+    assert list(sched) == [2, 1, True], (label, list(sched))
     out[label] = {"sha": h[0], "hmac": h[1], "gbank": gb, "recipes": rc, "ranks": rk, "roundtrip": list(rt)}
     print(label, h[0][:16], h[1][:16], len(gb), list(rt))
 json.dump({"secret": SECRET, "runs": out}, open("/tmp/addon-out.json", "w"))

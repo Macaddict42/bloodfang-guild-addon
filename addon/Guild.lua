@@ -80,11 +80,25 @@ local function request()
   local fn = (C_GuildInfo and C_GuildInfo.GuildRoster) or GuildRoster
   if fn then pcall(fn) end
 end
-ns.on("PLAYER_LOGIN", function() if C_Timer then C_Timer.After(3, request) else request() end end)
+-- A few seconds after login or a /reload, ask for the roster (and read the ranks once more a little later), so the
+-- names are captured without anyone opening the guild window. The server throttles roster requests (about one per
+-- 10 s), so the two events share one request.
+local lastAsk = -1e9
+local function soon()
+  local now = GetTime and GetTime() or 0
+  if now - lastAsk < 10 then return end
+  lastAsk = now
+  if not C_Timer then request() ns.captureRanks() return end
+  C_Timer.After(4, request)
+  C_Timer.After(9, ns.captureRanks)
+end
+ns.soonRanks = soon
+ns.on("PLAYER_LOGIN", soon)
+ns.on("PLAYER_ENTERING_WORLD", function(initial, reload) if initial or reload or initial == nil then soon() end end)
 ns.on("PLAYER_GUILD_UPDATE", function() request() ns.captureRanks() end)
 ns.on("GUILD_ROSTER_UPDATE", function() ns.captureRanks() end)
 ns.commands.ranks = function()
   local g = ns.db().guild
-  if not g then ns.print("No guild rank names read yet. Open the guild window or /reload while in a guild.") return end
+  if not g then ns.print("No guild rank names read yet. They are read a few seconds after login; open the guild window or /reload while in a guild.") return end
   ns.print(("%s: %s"):format(g.name, table.concat(g.ranks, ", ")))
 end
