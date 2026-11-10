@@ -2,17 +2,19 @@
 Bloodfang guild addon and optional uploader for WoW: Forever. Open source so anyone can review it.
 
 ## What's here
-- `addon/`: the in-game addon. Captures the guild bank (every tab you can view, with item icons and gold) when you open it, saves your profession recipes when you open a profession window, links your character to the site, and shares your zone with online guildmates (in game only; `/bf location off` to stop).
+- `addon/`: the in-game addon. Captures the guild bank (every tab you can view, with item icons and gold) when you open it, saves your profession recipes when you open a profession window, links your character to the site, and shares your zone with online guildmates (in game only; `<cmd> location off` to stop).
 - `uploader/`: optional uploader. It reads only the addon's SavedVariables file and posts the signed strings to the site. It never opens, inspects or talks to the game process. Today it's a command-line tool; the desktop app is next.
 - Releases are built by GitHub Actions from tags (`addon-vX.Y.Z`, `uploader-vX.Y.Z`) with a SHA-256 file and a build provenance attestation. Builds are unsigned for now.
 
 ## Install the addon
 1. Download the zip from Releases and check it: `sha256sum -c <zip>.sha256` and `gh attestation verify <zip> --repo <owner>/<repo>`.
 2. Unzip into `World of Warcraft/<client>/Interface/AddOns/`. You should get one addon folder.
-3. In game: get a code from the site's Link page, type `/bf link <code>`, copy the string into the site, paste the string the site gives back with `/bf import`.
-4. Open the guild bank or a profession window. Then `/reload` (or log out) so the game writes the file, and either run the uploader or copy with `/bf export` and paste on the site.
+3. In game: get a code from the site's Link page, type `<cmd> link <code>`, copy the string into the site, paste the string the site gives back with `<cmd> import`.
+4. Open the guild bank or a profession window. Then `/reload` (or log out) so the game writes the file, and either run the uploader or copy with `<cmd> export` and paste on the site.
 
-Commands: `/bf link <code>`, `/bf import`, `/bf export [gbank|recipes]`, `/bf location on|off`, `/bf where`, `/bf version`.
+Commands: `<cmd> link <code>`, `<cmd> import`, `<cmd> export [gbank|recipes]`, `<cmd> ranks`, `<cmd> location on|off`, `<cmd> where`, `<cmd> version`.
+
+`<cmd>` is either slash command the build registers: `/<ADDON_SLASH>` (the short one hints show) or `/<addon name in lower case>`. Both come from the build config (repository variables `ADDON_SLASH` and `ADDON_NAME`), like the addon's name. `ADDON_ICON` (a PNG path or https URL, e.g. the site's header logo) becomes the AddOns list icon (`Icon.tga`, 64x64, `## IconTexture`). `tests/package-check.sh` builds a zip with test values and checks what ships.
 
 ## Uploader (command line)
 Make a token on the site (Settings → Uploader tokens; guild bank uploads need an officer role). Then:

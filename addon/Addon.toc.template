@@ -2,8 +2,10 @@
 ## Title: @ADDON_TITLE@
 ## Notes: Guild bank, recipes and linking for the guild website.
 ## Version: @VERSION@
+## IconTexture: Interface\AddOns\@ADDON_NAME@\Icon
 ## SavedVariables: @ADDON_NAME@DB
 
+Config.lua
 Libs\LibDeflate.lua
 Codec.lua
 Core.lua

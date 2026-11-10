@@ -13,8 +13,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Tests (Lua 5.1 and LuaJIT)
         run: |
-          python3 -m venv /tmp/v && /tmp/v/bin/pip install -q lupa==2.4
+          python3 -m venv /tmp/v && /tmp/v/bin/pip install -q lupa==2.4 pillow==11.0.0
           /tmp/v/bin/python tests/run.py
+          PATH=/tmp/v/bin:$PATH sh tests/package-check.sh
       - name: No branding
         env: { BRANDING_WORDS: "${{ secrets.BRANDING_WORDS }}" }
         run: scripts/check-no-branding.sh
@@ -23,7 +24,9 @@ jobs:
           ADDON_NAME: ${{ vars.ADDON_NAME }}
           ADDON_TITLE: ${{ vars.ADDON_TITLE }}
           ADDON_INTERFACE: ${{ vars.ADDON_INTERFACE }}
-        run: scripts/build-addon.sh "${GITHUB_REF_NAME#addon-v}"
+          ADDON_SLASH: ${{ vars.ADDON_SLASH }}
+          ADDON_ICON: ${{ vars.ADDON_ICON }}
+        run: PATH=/tmp/v/bin:$PATH scripts/build-addon.sh "${GITHUB_REF_NAME#addon-v}"
       - name: SHA256SUMS
         run: cd dist && cat *.sha256 > SHA256SUMS
       - uses: actions/attest-build-provenance@v2

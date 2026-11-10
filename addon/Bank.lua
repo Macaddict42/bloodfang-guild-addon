@@ -56,7 +56,7 @@ local function finish()
     ns.queue("gbank", "gbank", s)
     local n = 0
     for _, t in ipairs(tabs) do n = n + #t.slots end
-    ns.print(("Guild bank captured (%d tabs, %d slots). It uploads with the uploader after /reload or logout, or copy it with /bf export gbank."):format(#tabs, n))
+    ns.print(("Guild bank captured (%d tabs, %d slots). It uploads with the uploader after /reload or logout, or copy it with %s export gbank."):format(#tabs, n, ns.cmd))
   end
 end
 
