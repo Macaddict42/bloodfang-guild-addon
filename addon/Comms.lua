@@ -3,7 +3,7 @@ local _, ns = ...
 local CT = C_ChatInfo
 local lastVer, vreqSent, warned, replyPending = 0, false, false, false
 local higher = {} -- version -> { [sender] = true }
-ns.roster = {}    -- sender -> { zone, sub, x, y, t } for /bf where
+ns.roster = {}    -- sender -> { zone, sub, x, y, t } for "<cmd> where"
 
 local function send(msg) if IsInGuild() then CT.SendAddonMessage(ns.prefix, msg, "GUILD") end end
 local function parse(v) local a, b, c = (v or ""):match("^(%d+)%.(%d+)%.(%d+)$") if a then return tonumber(a), tonumber(b), tonumber(c) end end
@@ -73,7 +73,7 @@ end)
 ns.commands.location = function(arg)
   arg = arg:lower()
   if arg == "on" or arg == "off" then ns.settings().location = (arg == "on") end
-  ns.print("Location sharing with guildmates is " .. (ns.settings().location and "on" or "off") .. ". It stays in game. /bf location on|off")
+  ns.print("Location sharing with guildmates is " .. (ns.settings().location and "on" or "off") .. ". It stays in game. " .. ns.cmd .. " location on|off")
 end
 ns.commands.where = function()
   local n = 0
