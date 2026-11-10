@@ -10,3 +10,4 @@ Core.lua
 Comms.lua
 Bank.lua
 Recipes.lua
+Guild.lua

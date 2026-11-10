@@ -8,6 +8,7 @@ local DBNAME = ADDON .. "DB"
 function ns.print(msg) DEFAULT_CHAT_FRAME:AddMessage("|cff4fc3f7" .. ADDON .. "|r " .. msg) end
 
 local function db() return _G[DBNAME] end
+ns.db = db
 function ns.settings() return db().settings end
 
 -- ---------- character identity ----------
@@ -25,6 +26,8 @@ function ns.export(ty, p)
     return nil
   end
   local env = { id = ns.randomHex(16), t = GetServerTime(), addon = ns.version, char = ns.me(), p = p }
+  -- Guild rank names (Guild.lua) ride on every other export, inside the signed envelope.
+  if ty ~= "ranks" and ns.guildBlock then env.guild = ns.guildBlock() end
   return ns.encodeString(ty, 1, env, secret)
 end
 
@@ -105,12 +108,13 @@ ns.commands.link = link
 ns.commands.import = function(arg) if arg ~= "" then import(arg) else ns.showPaste("Paste the string from the site", import) end end
 ns.commands.export = function(arg)
   local list = {}
-  for key, e in pairs(db().outbox) do if arg == "" or key:find(arg, 1, true) == 1 then list[#list + 1] = e.s end end
+  -- `ranks` strings go up with the uploader only; the site has no paste box for them.
+  for key, e in pairs(db().outbox) do if key ~= "ranks" and (arg == "" or key:find(arg, 1, true) == 1) then list[#list + 1] = e.s end end
   if #list == 0 then ns.print("Nothing to export yet. Open the guild bank or a profession window first.") return end
   ns.showCopy("Copy and paste on the site (Bank or Crafting page)", table.concat(list, "\n"))
 end
 ns.commands.help = function()
-  ns.print("/bf link <code> · /bf import · /bf export [gbank|recipes] · /bf location on|off · /bf where · /bf version")
+  ns.print("/bf link <code> · /bf import · /bf export [gbank|recipes] · /bf ranks · /bf location on|off · /bf where · /bf version")
 end
 SLASH_GUILDADDONBF1 = "/bf"
 SlashCmdList.GUILDADDONBF = function(msg)
