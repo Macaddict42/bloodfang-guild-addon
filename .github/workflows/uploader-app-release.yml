@@ -110,8 +110,16 @@ jobs:
         working-directory: uploader
         run: |
           set -euo pipefail
+          find target/universal-apple-darwin/release/bundle -maxdepth 2 || true
           main=$(node -p "require('./app/src-tauri/tauri.conf.json').mainBinaryName")
-          app=$(find target -maxdepth 6 -path '*/release/bundle/macos/*.app' -type d | head -1)
+          dmg=$(find target -path '*/release/bundle/dmg/*.dmg' -type f -print -quit)
+          echo "dmg=$dmg"
+          test -n "$dmg"
+          hdiutil verify "$dmg"
+          mnt=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg" >/dev/null
+          trap 'hdiutil detach "$mnt" >/dev/null || true' EXIT
+          app=$(find "$mnt" -maxdepth 1 -name '*.app' -print -quit)
           echo "app=$app"
           test -n "$app"
           for bin in "$main" updater; do
@@ -119,15 +127,11 @@ jobs:
             echo "$bin: $archs"
             [[ "$archs" == *x86_64* && "$archs" == *arm64* ]] || { echo "$bin is not universal" >&2; exit 1; }
           done
-          dmg=$(find target -path '*/release/bundle/dmg/*.dmg' -type f | head -1)
-          echo "dmg=$dmg"
-          test -n "$dmg"
-          hdiutil verify "$dmg"
-          # Plain archive of the .app for manual or scripted installs (tauri only makes one
-          # when its own updater signing is configured, which this app does not use).
-          dir=$(dirname "$app"); name=$(basename "$app")
-          COPYFILE_DISABLE=1 tar -czf "$dir/$name.tar.gz" -C "$dir" "$name"
-          ls -la "$dir"
+          # Plain archive of the .app from the disk image, for manual or scripted installs
+          # (tauri only makes one when its own updater signing is set up, which this app does not use).
+          name=$(basename "$app")
+          COPYFILE_DISABLE=1 tar -czf "$(dirname "$dmg")/$name.tar.gz" -C "$mnt" "$name"
+          ls -la "$(dirname "$dmg")"
       - name: Collect artifacts
         env:
           INPUT_VERSION: ${{ inputs.version }}
