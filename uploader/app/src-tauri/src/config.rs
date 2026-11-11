@@ -19,6 +19,13 @@ pub struct LoadedPrefs {
     pub origin: PrefsOrigin,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SentCount {
+    pub ty: String,
+    pub n: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Prefs {
@@ -34,6 +41,9 @@ pub struct Prefs {
     /// Plain outcome lines from the last upload (e.g. "gbank accepted"), for UI "what was sent".
     #[serde(default)]
     pub last_sent_lines: Option<Vec<String>>,
+    /// Per-type counts accepted in that send (ranks / gbank items / recipe ids).
+    #[serde(default)]
+    pub last_sent_counts: Option<Vec<SentCount>>,
     pub last_addon_version: Option<String>,
     /// Latest addon version the user chose Skip this version for (SPEC §18b).
     #[serde(default)]

@@ -342,6 +342,7 @@ struct UploadResult {
     found: usize,
     sent: usize,
     lines: Vec<String>,
+    counts: Vec<config::SentCount>,
     at: String,
     status: String,
     requested: bool,
@@ -371,6 +372,7 @@ fn upload_result(upload: &upload_gate::SavedUpload) -> UploadResult {
         found: upload.found,
         sent: upload.sent,
         lines: upload.lines.clone(),
+        counts: upload.counts.clone(),
         at: upload.at.clone(),
         status: upload.status.clone(),
         requested: upload.requested,
@@ -382,6 +384,7 @@ fn stored_result(prefs: &config::Prefs) -> UploadResult {
         found: 0,
         sent: 0,
         lines: prefs.last_sent_lines.clone().unwrap_or_default(),
+        counts: prefs.last_sent_counts.clone().unwrap_or_default(),
         at: prefs.last_upload_at.clone().unwrap_or_default(),
         status: prefs.last_status.clone().unwrap_or_else(|| "nothing new".into()),
         requested: true,
@@ -394,6 +397,7 @@ fn notice_ok(upload: &upload_gate::SavedUpload) -> WatchNotice {
         found: upload.found,
         sent: upload.sent,
         lines: upload.lines.clone(),
+        counts: upload.counts.clone(),
         at: upload.at.clone(),
         status: upload.status.clone(),
         requested: upload.requested,
@@ -402,7 +406,7 @@ fn notice_ok(upload: &upload_gate::SavedUpload) -> WatchNotice {
 }
 
 fn notice_err(message: String) -> WatchNotice {
-    WatchNotice { ok: false, found: 0, sent: 0, lines: Vec::new(), at: String::new(), status: String::new(), requested: false, error: message }
+    WatchNotice { ok: false, found: 0, sent: 0, lines: Vec::new(), counts: Vec::new(), at: String::new(), status: String::new(), requested: false, error: message }
 }
 
 #[derive(Serialize)]
@@ -412,6 +416,7 @@ struct WatchNotice {
     found: usize,
     sent: usize,
     lines: Vec<String>,
+    counts: Vec<config::SentCount>,
     at: String,
     status: String,
     requested: bool,
@@ -439,6 +444,7 @@ fn upload_once(app: &AppHandle) -> Result<(), String> {
         let prefs = state.prefs.lock().map_err(|e| e.to_string())?.clone();
         (prefs, state.upload_seq.note_start())
     };
+    let _ = app.emit("upload-started", ());
     let mut attempt = 0;
     let result = loop {
         match do_upload(&prefs) {

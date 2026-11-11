@@ -31,6 +31,7 @@ pub struct SavedUpload {
     pub found: usize,
     pub sent: usize,
     pub lines: Vec<String>,
+    pub counts: Vec<crate::config::SentCount>,
     pub at: String,
     pub status: String,
     /// Whether this pass sent anything. Only then is it the "Last upload"; otherwise it is "Last checked".
@@ -94,10 +95,41 @@ pub fn saved_from_report(report: core::Report) -> SavedUpload {
         found: report.found,
         sent: accepted,
         lines,
+        counts: counts_from_report(&report),
         at: unix_now(),
         status,
         requested,
     }
+}
+
+
+fn counts_from_report(report: &core::Report) -> Vec<crate::config::SentCount> {
+    use std::collections::BTreeMap;
+    let mut by_ty: BTreeMap<&str, usize> = BTreeMap::new();
+    for (raw, outcome) in &report.results {
+        if !core::done(outcome) {
+            continue;
+        }
+        if let Some((ty, n)) = core::envelope_count(raw) {
+            *by_ty.entry(ty).or_insert(0) += n;
+        }
+    }
+    if matches!(report.ranks, Some(core::RanksOutcome::Stored(_))) {
+        if let Some(n) = report.ranks_count {
+            by_ty.insert("ranks", n);
+        }
+    }
+    const ORDER: &[&str] = &["ranks", "gbank", "recipes"];
+    let mut out = Vec::new();
+    for ty in ORDER {
+        if let Some(n) = by_ty.remove(ty) {
+            out.push(crate::config::SentCount { ty: (*ty).into(), n });
+        }
+    }
+    for (ty, n) in by_ty {
+        out.push(crate::config::SentCount { ty: ty.into(), n });
+    }
+    out
 }
 
 /// Apply one finished upload. Callers hold the prefs lock for the whole call so the
@@ -114,6 +146,7 @@ pub fn finish_upload(prefs: &mut Prefs, seq: &UploadSeq, started: u64, result: R
             if upload.requested {
                 prefs.last_upload_at = Some(upload.at.clone());
                 prefs.last_sent_lines = Some(upload.lines.clone());
+                prefs.last_sent_counts = Some(upload.counts.clone());
                 prefs.last_status = Some(upload.status.clone());
             } else if prefs.last_status.is_none() {
                 prefs.last_status = Some(upload.status.clone());
@@ -230,6 +263,7 @@ mod tests {
             found: lines.len(),
             sent: 1,
             lines: lines.iter().map(|s| (*s).to_string()).collect(),
+            counts: vec![],
             at: "200".into(),
             status: status.into(),
             requested: true,
@@ -241,7 +275,7 @@ mod tests {
         let seq = UploadSeq::default();
         let started = seq.note_start();
         let mut prefs = prefs_with_success();
-        let quiet = SavedUpload { found: 0, sent: 0, lines: vec![], at: "300".into(), status: "nothing new".into(), requested: false };
+        let quiet = SavedUpload { found: 0, sent: 0, lines: vec![], counts: vec![], at: "300".into(), status: "nothing new".into(), requested: false };
         assert!(matches!(finish_upload(&mut prefs, &seq, started, Ok(quiet)), Finish::Applied(_)));
         assert_eq!(prefs.last_upload_at.as_deref(), Some("100"));
         assert_eq!(prefs.last_checked_at.as_deref(), Some("300"));
@@ -251,15 +285,16 @@ mod tests {
 
     #[test]
     fn rank_names_count_as_an_upload_with_a_clear_line() {
-        let stored = core::Report { found: 0, sent: 0, results: vec![], ranks: Some(core::RanksOutcome::Stored("stored".into())) };
+        let stored = core::Report { found: 0, sent: 0, results: vec![], ranks: Some(core::RanksOutcome::Stored("stored".into())), ranks_count: Some(5) };
         let up = saved_from_report(stored);
         assert!(up.requested);
         assert_eq!((up.status.as_str(), up.lines.clone()), ("sent 1", vec!["ranks accepted".to_string()]));
-        let refused = core::Report { found: 0, sent: 0, results: vec![], ranks: Some(core::RanksOutcome::Refused(core::ranks::NEEDS_OFFICER.into())) };
+        assert_eq!(up.counts, vec![crate::config::SentCount { ty: "ranks".into(), n: 5 }]);
+        let refused = core::Report { found: 0, sent: 0, results: vec![], ranks: Some(core::RanksOutcome::Refused(core::ranks::NEEDS_OFFICER.into())), ranks_count: None };
         let up = saved_from_report(refused);
         assert_eq!(up.status, "sent 0");
         assert_eq!(up.lines, vec!["ranks Rank names need a Guild Master or officer character linked".to_string()]);
-        let none = saved_from_report(core::Report { found: 0, sent: 0, results: vec![], ranks: None });
+        let none = saved_from_report(core::Report { found: 0, sent: 0, results: vec![], ranks: None, ranks_count: None });
         assert!(!none.requested);
         assert_eq!(none.status, "nothing new");
     }

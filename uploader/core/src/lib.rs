@@ -3,6 +3,7 @@
 //! the game process, and it never edits SavedVariables.
 pub mod browser_auth;
 pub mod detect;
+mod envelope;
 pub mod http;
 pub mod launch;
 pub mod log;
@@ -17,6 +18,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub use envelope::envelope_count;
 pub use detect::{candidates, folder_acceptable, looks_like_game_dir, probe_explicit, probe_game_folder, FolderProbe, FolderSource};
 pub use launch::quote_windows_run;
 pub use process::{background_command, game_seems_running, is_game_process, CREATE_NO_WINDOW};
@@ -173,6 +175,8 @@ pub struct Report {
     pub results: Vec<(String, Outcome)>,
     /// Rank names, when a block was sent on this pass.
     pub ranks: Option<RanksOutcome>,
+    /// How many names were in the accepted rank-name block, if one was stored.
+    pub ranks_count: Option<usize>,
 }
 
 impl Report {
@@ -204,6 +208,9 @@ pub fn run_all(files: &[PathBuf], site: &str, token: &str, state_path: &Path, ra
         state.ranks_last = Some(mark);
         let _ = state.save(state_path);
     }
+    if matches!(outcome, RanksOutcome::Stored(_)) {
+        report.ranks_count = Some(block.ranks.len());
+    }
     report.ranks = Some(outcome);
     Ok(report)
 }
@@ -223,7 +230,7 @@ fn run_strings(files: &[PathBuf], site: &str, token: &str, state_path: &Path) ->
         }
         let _ = state.save(state_path);
     }
-    Ok(Report { found, sent: todo.len(), results, ranks: None })
+    Ok(Report { found, sent: todo.len(), results, ranks: None, ranks_count: None })
 }
 
 #[cfg(test)]
