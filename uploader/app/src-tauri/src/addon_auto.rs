@@ -2,27 +2,37 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddonAuto {
-    /// Newer than what is installed, the game is not running, and this version was not set aside.
+    /// Newer than what is installed and this version was not set aside. The game may be running:
+    /// the install replaces files in place and the game picks them up on /reload or a zone change.
     Install,
-    /// A newer archive exists, but the game process is running.
+    /// An install already failed on a locked file while the game was running; wait until it closes.
     WaitForGame,
     /// The user previously set this exact version aside.
     KeepSkipped,
     Current,
 }
 
-pub fn addon_auto_step(update_available: bool, game_running: bool, skipped_matches_latest: bool) -> AddonAuto {
+/// `locked_while_running`: the last install attempt hit a file the running game held open.
+pub fn addon_auto_step(update_available: bool, game_running: bool, skipped_matches_latest: bool, locked_while_running: bool) -> AddonAuto {
     if !update_available {
         return AddonAuto::Current;
     }
     if skipped_matches_latest {
         return AddonAuto::KeepSkipped;
     }
-    if game_running {
+    if game_running && locked_while_running {
         return AddonAuto::WaitForGame;
     }
     AddonAuto::Install
 }
+
+/// Shown after an install while the game is running.
+pub fn installed_while_running(version: &str) -> String {
+    format!("Installed {version}. Reload or zone to use it. If it doesn't load, restart the game.")
+}
+
+/// Shown when a file stayed locked while the game was running (the old addon was put back).
+pub const LOCKED_WHILE_RUNNING: &str = "Couldn't update the addon while the game is running. It will retry after the game closes.";
 
 /// Network checks may be repeated. A checksum or unpack failure must not.
 pub fn addon_failure_retries(network: bool, attempt: u32) -> bool {
@@ -60,7 +70,7 @@ pub enum Outcome {
 }
 
 pub fn outcome_from_notice(message: &str, ok: bool, retry: bool) -> Outcome {
-    if message.starts_with("Game is running") {
+    if message.starts_with("Couldn't update the addon while the game is running") {
         Outcome::WaitForGame
     } else if message.starts_with("Installed ") {
         Outcome::Installed
@@ -145,14 +155,29 @@ mod tests {
 
     #[test]
     fn a_new_addon_installs_without_a_prompt() {
-        assert_eq!(addon_auto_step(true, false, false), AddonAuto::Install);
+        assert_eq!(addon_auto_step(true, false, false, false), AddonAuto::Install);
     }
 
     #[test]
-    fn a_running_game_defers_and_a_skipped_version_stays() {
-        assert_eq!(addon_auto_step(true, true, false), AddonAuto::WaitForGame);
-        assert_eq!(addon_auto_step(true, false, true), AddonAuto::KeepSkipped);
-        assert_eq!(addon_auto_step(false, true, false), AddonAuto::Current);
+    fn a_running_game_still_installs_and_a_skipped_version_stays() {
+        assert_eq!(addon_auto_step(true, true, false, false), AddonAuto::Install, "0.1.4: install while the game runs");
+        assert_eq!(addon_auto_step(true, false, true, false), AddonAuto::KeepSkipped);
+        assert_eq!(addon_auto_step(true, true, true, false), AddonAuto::KeepSkipped);
+        assert_eq!(addon_auto_step(false, true, false, false), AddonAuto::Current);
+    }
+
+    #[test]
+    fn a_lock_while_running_waits_for_the_game_to_close() {
+        assert_eq!(addon_auto_step(true, true, false, true), AddonAuto::WaitForGame);
+        // Once the game has closed the earlier lock no longer matters.
+        assert_eq!(addon_auto_step(true, false, false, true), AddonAuto::Install);
+    }
+
+    #[test]
+    fn running_game_copy() {
+        assert_eq!(installed_while_running("0.2.2"), "Installed 0.2.2. Reload or zone to use it. If it doesn't load, restart the game.");
+        assert_eq!(outcome_from_notice(&installed_while_running("0.2.2"), true, false), Outcome::Installed);
+        assert_eq!(outcome_from_notice(LOCKED_WHILE_RUNNING, true, true), Outcome::WaitForGame);
     }
 
     #[test]
@@ -167,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_game_exit_installs_once_without_a_ui_call() {
+    fn hidden_lock_wait_then_game_exit_installs_once_without_a_ui_call() {
         let cadence = test_cadence();
         let mut sched = Scheduler::new(cadence);
         let mut now = 0u64;
@@ -241,7 +266,7 @@ mod tests {
             Due::Wait { ms } => assert_eq!(ms, cadence.discover_ms),
             other => panic!("{other:?}"),
         }
-        assert_eq!(outcome_from_notice("Game is running. The addon update will wait until it closes.", true, true), Outcome::WaitForGame);
+        assert_eq!(outcome_from_notice(LOCKED_WHILE_RUNNING, true, true), Outcome::WaitForGame);
         assert_eq!(outcome_from_notice("Installed 0.1.2.", true, false), Outcome::Installed);
         assert_eq!(outcome_from_notice("the download didn't match SHA256SUMS; left the old addon in place", false, false), Outcome::Integrity);
         assert_eq!(outcome_from_notice("couldn't reach GitHub: offline", false, true), Outcome::Network);

@@ -1529,7 +1529,7 @@ dependencies = [
 
 [[package]]
 name = "guild-uploader-app"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "dirs 5.0.1",
  "flate2",
@@ -1561,6 +1561,7 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "getrandom 0.2.17",
+ "libc",
  "rcgen",
  "regex",
  "rustls",

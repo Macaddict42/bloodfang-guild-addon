@@ -186,7 +186,6 @@ function setAddonUi(state, check) {
   if (state === "updating") text = "Updating the addon…";
   else if (state === "check-failed") text = "Couldn't check for an addon update.";
   else if (state === "failed") text = "The addon update did not finish.";
-  else if (c?.gameRunning && c?.updateAvailable) text = "Game is running. The addon update will wait until it closes.";
   else if (c?.latest) text = "Up to date.";
   else text = "Couldn't check for an addon update.";
   $("addon-state").textContent = text;
@@ -208,8 +207,8 @@ function maybeMain() {
     setState("main");
     invoke("start_watch").catch(() => {});
     invoke("check_addon").then((c) => {
-      if (c.gameRunning && c.updateAvailable) setAddonUi("deferred", c);
-      else if (c.updateAvailable) setAddonUi("updating", c);
+      // 0.1.4: the update installs even while the game runs (it loads on /reload or a zone change).
+      if (c.updateAvailable) setAddonUi("updating", c);
       else setAddonUi("uptodate", c);
     }).catch((e) => {
       // The reason from the app (site and GitHub answers), not a generic line.
