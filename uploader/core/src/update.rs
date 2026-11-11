@@ -32,6 +32,8 @@ pub enum UpdateError {
     Checksum,
     Zip(String),
     Io(String),
+    /// A file stayed in use (the game holds it open) after the retries; the old addon was put back.
+    Locked(String),
 }
 impl std::fmt::Display for UpdateError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -41,6 +43,7 @@ impl std::fmt::Display for UpdateError {
             UpdateError::Checksum => write!(f, "the download didn't match its SHA-256 checksum; left the old addon in place"),
             UpdateError::Zip(e) => write!(f, "couldn't unpack the addon: {e}"),
             UpdateError::Io(e) => write!(f, "{e}"),
+            UpdateError::Locked(e) => write!(f, "a file was in use and couldn't be replaced: {e}; left the old addon in place"),
         }
     }
 }
@@ -224,7 +227,8 @@ pub fn installed_version(addons_dir: &Path, addon_name: &str) -> Option<Version>
 
 pub fn addons_dir(game_dir: &Path) -> PathBuf { game_dir.join("Interface").join("AddOns") }
 
-/// Download, verify SHA-256, install into Interface/AddOns/<name>/, backup + rollback on failure.
+/// Download, verify SHA-256, install into Interface/AddOns/<name>/ in place (see `install_zip_with`),
+/// backup + rollback on failure.
 /// Returns the installed version string. The archive is checked against the SHA-256 the site
 /// gave or, for a GitHub release, against SHA256SUMS, in this process.
 pub fn install_addon(rel: &AddonRelease, game_dir: &Path, addon_name: &str) -> Result<String, UpdateError> {
@@ -246,41 +250,186 @@ pub fn install_addon(rel: &AddonRelease, game_dir: &Path, addon_name: &str) -> R
 }
 
 fn install_zip_bytes(zip_bytes: &[u8], rel: &AddonRelease, game_dir: &Path, addon_name: &str) -> Result<String, UpdateError> {
+    install_zip_with(zip_bytes, rel, game_dir, addon_name, &Retry::production(), &|from: &Path, to: &Path| fs::rename(from, to))
+}
 
-    let dest = addons_dir(game_dir).join(addon_name);
-    let backup = addons_dir(game_dir).join(format!("{addon_name}.bak-uploader"));
-    if backup.exists() { let _ = fs::remove_dir_all(&backup); }
-    if dest.exists() {
-        fs::rename(&dest, &backup).map_err(|e| UpdateError::Io(format!("couldn't move the old addon aside ({}): {e}", dest.display())))?;
+/// How often a file the game holds open is retried before the install is rolled back.
+#[derive(Clone, Copy, Debug)]
+pub struct Retry {
+    pub attempts: u32,
+    pub base_ms: u64,
+}
+
+impl Retry {
+    pub fn production() -> Self {
+        // 6 tries over about 6 s (0.2, 0.4, 0.8, 1.6, 3.2 s apart).
+        Self { attempts: 6, base_ms: 200 }
+    }
+}
+
+/// A file another program holds open: Windows sharing or lock violation, or access denied while
+/// the file is in use. These are worth retrying; anything else fails at once.
+fn is_lock_error(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::PermissionDenied {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
+        if matches!(e.raw_os_error(), Some(32) | Some(33)) {
+            return true;
+        }
+    }
+    false
+}
+
+type RenameFn<'a> = &'a dyn Fn(&Path, &Path) -> std::io::Result<()>;
+
+/// Copy `src` next to `target` under a temporary name, then rename it over `target`.
+/// The rename is retried while the target is locked. The temporary file is removed on failure.
+fn place_file(src: &Path, target: &Path, retry: &Retry, rename: RenameFn) -> std::io::Result<()> {
+    let dir = target.parent().ok_or_else(|| std::io::Error::other("file has no folder"))?;
+    fs::create_dir_all(dir)?;
+    let name = target.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let tmp = dir.join(format!(".{name}.uploader-tmp"));
+    let _ = fs::remove_file(&tmp);
+    fs::copy(src, &tmp)?;
+    let mut attempt = 0u32;
+    loop {
+        match rename(&tmp, target) {
+            Ok(()) => return Ok(()),
+            Err(e) if is_lock_error(&e) && attempt + 1 < retry.attempts => {
+                std::thread::sleep(Duration::from_millis(retry.base_ms.saturating_mul(1u64 << attempt.min(10))));
+                attempt += 1;
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&tmp);
+                return Err(e);
+            }
+        }
+    }
+}
+
+/// Every file under `root`, as paths relative to it.
+fn list_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    let mut stack = vec![PathBuf::new()];
+    while let Some(rel) = stack.pop() {
+        for ent in fs::read_dir(root.join(&rel))? {
+            let ent = ent?;
+            let child = rel.join(ent.file_name());
+            if ent.file_type()?.is_dir() {
+                stack.push(child);
+            } else {
+                out.push(child);
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Install order: every other file first, `.toc` files last, so the game never sees a new `.toc`
+/// that points at files not written yet.
+fn install_order(mut files: Vec<PathBuf>) -> Vec<PathBuf> {
+    let is_toc = |p: &PathBuf| p.extension().map(|e| e.eq_ignore_ascii_case("toc")).unwrap_or(false);
+    files.sort_by_key(|p| (is_toc(p), p.clone()));
+    files
+}
+
+/// Install that is safe while the game is running: the game may hold addon files open and reads
+/// them again on /reload or a zone change.
+/// - The archive is unpacked into a staging folder in `Interface/` (same volume as AddOns, never
+///   scanned for addons).
+/// - The live folder is copied to a backup; it is never renamed or removed.
+/// - Each file is replaced in place (temporary file, then rename), `.toc` last. Files the new
+///   version no longer ships are left in place (the `.toc` no longer loads them).
+/// - A file that stays locked after the retries rolls back every file already replaced and
+///   returns `UpdateError::Locked`.
+fn install_zip_with(zip_bytes: &[u8], rel: &AddonRelease, game_dir: &Path, addon_name: &str, retry: &Retry, rename: RenameFn) -> Result<String, UpdateError> {
+    let addons = addons_dir(game_dir);
+    let interface = addons.parent().map(Path::to_path_buf).unwrap_or_else(|| game_dir.to_path_buf());
+    fs::create_dir_all(&addons).map_err(|e| UpdateError::Io(format!("couldn't create {}: {e}", addons.display())))?;
+    let dest = addons.join(addon_name);
+    // Earlier versions kept the backup inside AddOns; it is our own folder, so tidy it away.
+    let legacy = addons.join(format!("{addon_name}.bak-uploader"));
+    if legacy.exists() {
+        let _ = fs::remove_dir_all(&legacy);
     }
 
-    let tmp = tempfile::tempdir().map_err(|e| {
-        if backup.exists() { let _ = fs::rename(&backup, &dest); }
-        UpdateError::Io(format!("couldn't make a temporary folder: {e}"))
-    })?;
-    if let Err(e) = unpack_zip(zip_bytes, tmp.path()) {
-        if backup.exists() { let _ = fs::rename(&backup, &dest); }
-        return Err(UpdateError::Zip(e));
-    }
-    // Zip root is ADDON_NAME/
-    let staged = tmp.path().join(addon_name);
-    let from = if staged.is_dir() { staged } else {
-        // single top-level dir
-        fs::read_dir(tmp.path()).ok().and_then(|mut d| d.next().and_then(|e| e.ok()).map(|e| e.path()))
+    let stage = tempfile::Builder::new()
+        .prefix(&format!(".{addon_name}.uploader-stage-"))
+        .tempdir_in(&interface)
+        .map_err(|e| UpdateError::Io(format!("couldn't make a staging folder in {}: {e}", interface.display())))?;
+    unpack_zip(zip_bytes, stage.path()).map_err(UpdateError::Zip)?;
+    // Zip root is ADDON_NAME/ (or a single top-level folder).
+    let staged = stage.path().join(addon_name);
+    let from = if staged.is_dir() {
+        staged
+    } else {
+        fs::read_dir(stage.path())
+            .ok()
+            .and_then(|mut d| d.next().and_then(|e| e.ok()).map(|e| e.path()))
             .filter(|p| p.is_dir())
-            .ok_or_else(|| {
-                if backup.exists() { let _ = fs::rename(&backup, &dest); }
-                UpdateError::Zip("zip has no addon folder".into())
-            })?
+            .ok_or_else(|| UpdateError::Zip("zip has no addon folder".into()))?
     };
-    fs::create_dir_all(addons_dir(game_dir)).map_err(|e| UpdateError::Io(format!("couldn't create {}: {e}", addons_dir(game_dir).display())))?;
-    if let Err(e) = copy_dir(&from, &dest) {
-        let _ = fs::remove_dir_all(&dest);
-        if backup.exists() { let _ = fs::rename(&backup, &dest); }
-        return Err(UpdateError::Io(format!("couldn't copy the addon into {}: {e}", dest.display())));
+    let files = list_files(&from).map_err(|e| UpdateError::Zip(format!("couldn't read the unpacked addon: {e}")))?;
+    if files.is_empty() {
+        return Err(UpdateError::Zip("zip has no addon files".into()));
+    }
+
+    let had_dest = dest.is_dir();
+    let backup = interface.join(format!(".{addon_name}.uploader-backup"));
+    if backup.exists() {
+        let _ = fs::remove_dir_all(&backup);
+    }
+    if had_dest {
+        copy_dir(&dest, &backup).map_err(|e| {
+            let _ = fs::remove_dir_all(&backup);
+            UpdateError::Io(format!("couldn't back up the old addon ({}): {e}; it was left as it is", dest.display()))
+        })?;
+    }
+
+    let mut done: Vec<PathBuf> = Vec::new();
+    for rel_path in install_order(files) {
+        if let Err(e) = place_file(&from.join(&rel_path), &dest.join(&rel_path), retry, rename) {
+            let locked = is_lock_error(&e);
+            let restored = roll_back(&dest, &backup, had_dest, &done, retry, rename);
+            let _ = fs::remove_dir_all(&backup);
+            let what = format!("{} ({e})", dest.join(&rel_path).display());
+            crate::log::warn("addon", &format!("install stopped at {what}; rolled back {} file(s){}", done.len(), if restored { "" } else { " (some could not be restored)" }));
+            return Err(if locked {
+                UpdateError::Locked(what)
+            } else {
+                UpdateError::Io(format!("couldn't copy the addon into {}: {what}", dest.display()))
+            });
+        }
+        done.push(rel_path);
     }
     let _ = fs::remove_dir_all(&backup);
     Ok(rel.version.to_string())
+}
+
+/// Put back every file in `done` from the backup (or remove it when the old version didn't have it).
+/// Returns false when a file couldn't be restored.
+fn roll_back(dest: &Path, backup: &Path, had_dest: bool, done: &[PathBuf], retry: &Retry, rename: RenameFn) -> bool {
+    if !had_dest {
+        return fs::remove_dir_all(dest).is_ok() || !dest.exists();
+    }
+    let mut ok = true;
+    // Undo in reverse, so a new .toc goes first.
+    for rel_path in done.iter().rev() {
+        let old = backup.join(rel_path);
+        let target = dest.join(rel_path);
+        if old.is_file() {
+            if place_file(&old, &target, retry, rename).is_err() {
+                ok = false;
+            }
+        } else if fs::remove_file(&target).is_err() && target.exists() {
+            ok = false;
+        }
+    }
+    ok
 }
 
 fn zip_name_stays_inside(name: &Path) -> bool {
@@ -491,6 +640,166 @@ mod tests {
         let rel = AddonRelease { tag: "t".into(), version: Version::parse("0.2.1").unwrap(), zip_name: "Example-0.2.1.zip".into(), zip_url: String::new(), sums_url: None, sig_url: None, sha256: None, source: "site" };
         assert!(matches!(install_zip_bytes(b"not a zip", &rel, game.path(), "Example"), Err(UpdateError::Zip(_))));
         assert_eq!(installed_version(&addons_dir(game.path()), "Example").unwrap().to_string(), "0.2.0");
+    }
+
+    fn zip_of(files: &[(&str, &str)]) -> Vec<u8> {
+        use zip::write::FileOptions;
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut cursor);
+            for (name, body) in files {
+                w.start_file(*name, FileOptions::default()).unwrap();
+                w.write_all(body.as_bytes()).unwrap();
+            }
+            w.finish().unwrap();
+        }
+        cursor.into_inner()
+    }
+
+    fn old_addon(game: &Path) -> PathBuf {
+        let old = addons_dir(game).join("Example");
+        fs::create_dir_all(old.join("libs")).unwrap();
+        fs::write(old.join("Example.toc"), "## Version: 0.2.0\nCore.lua\nGone.lua\n").unwrap();
+        fs::write(old.join("Core.lua"), "old core").unwrap();
+        fs::write(old.join("Gone.lua"), "removed in 0.2.1").unwrap();
+        fs::write(old.join("libs").join("Lib.lua"), "old lib").unwrap();
+        old
+    }
+
+    fn new_zip() -> Vec<u8> {
+        zip_of(&[
+            ("Example/Example.toc", "## Version: 0.2.1\nCore.lua\nNew.lua\n"),
+            ("Example/Core.lua", "new core"),
+            ("Example/New.lua", "added in 0.2.1"),
+            ("Example/libs/Lib.lua", "new lib"),
+        ])
+    }
+
+    fn rel_021() -> AddonRelease {
+        AddonRelease { tag: "addon-v0.2.1".into(), version: Version::parse("0.2.1").unwrap(), zip_name: "Example-0.2.1.zip".into(), zip_url: String::new(), sums_url: None, sig_url: None, sha256: None, source: "site" }
+    }
+
+    fn only_example_left(game: &Path) {
+        let mut addons: Vec<String> = fs::read_dir(addons_dir(game)).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+        addons.sort();
+        assert_eq!(addons, ["Example"], "no staging, backup or temporary folder in AddOns");
+        let interface: Vec<String> = fs::read_dir(game.join("Interface")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+        assert_eq!(interface, ["AddOns"], "staging folder and backup were cleaned up");
+    }
+
+    fn no_tmp_files(dir: &Path) {
+        for f in list_files(dir).unwrap() {
+            assert!(!f.to_string_lossy().contains("uploader-tmp"), "left {f:?}");
+        }
+    }
+
+    #[test]
+    fn in_place_install_keeps_the_folder_writes_toc_last_and_leaves_removed_files() {
+        let game = tempfile::tempdir().unwrap();
+        let dest = old_addon(game.path());
+        #[cfg(unix)]
+        let ino = { use std::os::unix::fs::MetadataExt; fs::metadata(&dest).unwrap().ino() };
+        let order = std::sync::Mutex::new(Vec::new());
+        let rename = |from: &Path, to: &Path| {
+            order.lock().unwrap().push(to.strip_prefix(&dest).unwrap().to_path_buf());
+            assert!(from.parent() == to.parent(), "the temporary file sits next to its target");
+            fs::rename(from, to)
+        };
+        let fast = Retry { attempts: 3, base_ms: 1 };
+        assert_eq!(install_zip_with(&new_zip(), &rel_021(), game.path(), "Example", &fast, &rename).unwrap(), "0.2.1");
+        let order = order.into_inner().unwrap();
+        assert_eq!(order.len(), 4);
+        assert_eq!(order.last().unwrap(), Path::new("Example.toc"), ".toc is written last: {order:?}");
+        assert_eq!(fs::read_to_string(dest.join("Core.lua")).unwrap(), "new core");
+        assert_eq!(fs::read_to_string(dest.join("New.lua")).unwrap(), "added in 0.2.1");
+        assert_eq!(fs::read_to_string(dest.join("libs/Lib.lua")).unwrap(), "new lib");
+        assert_eq!(fs::read_to_string(dest.join("Gone.lua")).unwrap(), "removed in 0.2.1", "files the new version dropped stay");
+        assert_eq!(installed_version(&addons_dir(game.path()), "Example").unwrap().to_string(), "0.2.1");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(fs::metadata(&dest).unwrap().ino(), ino, "the live folder was not renamed or recreated");
+        }
+        only_example_left(game.path());
+        no_tmp_files(&dest);
+    }
+
+    #[test]
+    fn a_file_that_stays_locked_rolls_every_file_back() {
+        let game = tempfile::tempdir().unwrap();
+        let dest = old_addon(game.path());
+        let tries = std::sync::atomic::AtomicU32::new(0);
+        // New.lua sorts after Core.lua and libs/Lib.lua sorts last of the non-.toc files: lock it,
+        // so Core.lua and New.lua are already replaced when the install stops.
+        let rename = |from: &Path, to: &Path| {
+            if to.ends_with("libs/Lib.lua") {
+                tries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+            fs::rename(from, to)
+        };
+        let fast = Retry { attempts: 4, base_ms: 1 };
+        let err = install_zip_with(&new_zip(), &rel_021(), game.path(), "Example", &fast, &rename).unwrap_err();
+        assert!(matches!(err, UpdateError::Locked(_)), "{err}");
+        assert!(err.to_string().contains("left the old addon in place"), "{err}");
+        assert_eq!(tries.load(std::sync::atomic::Ordering::SeqCst), 4, "retried up to the limit");
+        assert_eq!(fs::read_to_string(dest.join("Core.lua")).unwrap(), "old core", "replaced file restored");
+        assert_eq!(fs::read_to_string(dest.join("libs/Lib.lua")).unwrap(), "old lib");
+        assert!(!dest.join("New.lua").exists(), "file the old version didn't have was removed");
+        assert_eq!(fs::read_to_string(dest.join("Gone.lua")).unwrap(), "removed in 0.2.1");
+        assert_eq!(installed_version(&addons_dir(game.path()), "Example").unwrap().to_string(), "0.2.0", "old .toc never replaced");
+        only_example_left(game.path());
+        no_tmp_files(&dest);
+    }
+
+    #[test]
+    fn a_short_lock_is_retried_and_the_install_finishes() {
+        let game = tempfile::tempdir().unwrap();
+        let dest = old_addon(game.path());
+        let tries = std::sync::atomic::AtomicU32::new(0);
+        let rename = |from: &Path, to: &Path| {
+            if to.ends_with("Core.lua") && tries.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+            fs::rename(from, to)
+        };
+        let fast = Retry { attempts: 6, base_ms: 1 };
+        assert_eq!(install_zip_with(&new_zip(), &rel_021(), game.path(), "Example", &fast, &rename).unwrap(), "0.2.1");
+        assert_eq!(tries.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert_eq!(fs::read_to_string(dest.join("Core.lua")).unwrap(), "new core");
+        only_example_left(game.path());
+    }
+
+    #[test]
+    fn other_errors_are_not_retried_and_a_first_install_is_removed_on_failure() {
+        let game = tempfile::tempdir().unwrap();
+        let tries = std::sync::atomic::AtomicU32::new(0);
+        let rename = |from: &Path, to: &Path| {
+            if to.ends_with("New.lua") {
+                tries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Err(std::io::Error::other("disk full"));
+            }
+            fs::rename(from, to)
+        };
+        let fast = Retry { attempts: 6, base_ms: 1 };
+        let err = install_zip_with(&new_zip(), &rel_021(), game.path(), "Example", &fast, &rename).unwrap_err();
+        assert!(matches!(err, UpdateError::Io(_)), "{err}");
+        assert_eq!(tries.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(!addons_dir(game.path()).join("Example").exists(), "a half first install is removed");
+        // And a clean first install works with the real rename.
+        assert_eq!(install_zip_bytes(&new_zip(), &rel_021(), game.path(), "Example").unwrap(), "0.2.1");
+        only_example_left(game.path());
+    }
+
+    #[test]
+    fn an_old_backup_folder_in_addons_is_tidied() {
+        let game = tempfile::tempdir().unwrap();
+        old_addon(game.path());
+        let legacy = addons_dir(game.path()).join("Example.bak-uploader");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("Example.toc"), "## Version: 0.1.0\n").unwrap();
+        assert_eq!(install_zip_bytes(&new_zip(), &rel_021(), game.path(), "Example").unwrap(), "0.2.1");
+        only_example_left(game.path());
     }
 
     #[test]

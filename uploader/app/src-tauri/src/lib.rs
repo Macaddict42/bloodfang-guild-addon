@@ -721,6 +721,11 @@ struct AddonAutoNotice {
     phase: &'static str,
 }
 
+/// Set when an install hit a file the running game held open; cleared once the game is closed
+/// or an install succeeds. While set and the game runs, the background check waits instead of
+/// retrying the install.
+static LOCKED_WHILE_RUNNING: AtomicBool = AtomicBool::new(false);
+
 fn spawn_addon_auto(app: AppHandle) {
     let state = app.state::<AppState>();
     if state.addon_started.swap(true, Ordering::SeqCst) {
@@ -820,7 +825,10 @@ fn addon_auto_once(app: &AppHandle) -> AddonAutoNotice {
         _ => false,
     };
     let skipped = prefs.skipped_addon_version.as_deref() == Some(latest_ver.as_str()) && !latest_ver.is_empty();
-    let step = addon_auto::addon_auto_step(update_available, game_running, skipped);
+    if !game_running {
+        LOCKED_WHILE_RUNNING.store(false, Ordering::SeqCst);
+    }
+    let step = addon_auto::addon_auto_step(update_available, game_running, skipped, LOCKED_WHILE_RUNNING.load(Ordering::SeqCst));
     let installed_text = installed.clone().unwrap_or_default();
     match step {
         addon_auto::AddonAuto::Current => AddonAutoNotice {
@@ -847,7 +855,7 @@ fn addon_auto_once(app: &AppHandle) -> AddonAutoNotice {
             game_running: true,
             installed: installed_text,
             latest: latest_ver,
-            message: "Game is running. The addon update will wait until it closes.".into(),
+            message: addon_auto::LOCKED_WHILE_RUNNING.into(),
             phase: "check",
         },
         addon_auto::AddonAuto::Install => {
@@ -869,13 +877,27 @@ fn addon_auto_once(app: &AppHandle) -> AddonAutoNotice {
                         prefs.skipped_addon_version = None;
                         let _ = config::save_prefs(&prefs);
                     }
+                    LOCKED_WHILE_RUNNING.store(false, Ordering::SeqCst);
                     AddonAutoNotice {
                         ok: true,
                         retry: false,
                         game_running,
                         installed: version.clone(),
                         latest: version,
-                        message: format!("Installed {latest_ver}."),
+                        message: if game_running { addon_auto::installed_while_running(&latest_ver) } else { format!("Installed {latest_ver}.") },
+                        phase: "install",
+                    }
+                }
+                Err(core::UpdateError::Locked(what)) if game_running => {
+                    core::log::warn("addon", &format!("a file was in use while the game ran ({what}); waiting until the game closes"));
+                    LOCKED_WHILE_RUNNING.store(true, Ordering::SeqCst);
+                    AddonAutoNotice {
+                        ok: true,
+                        retry: true,
+                        game_running,
+                        installed: installed_text,
+                        latest: latest_ver,
+                        message: addon_auto::LOCKED_WHILE_RUNNING.into(),
                         phase: "install",
                     }
                 }
