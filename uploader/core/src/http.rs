@@ -165,6 +165,12 @@ mod tests {
         let text = describe(err);
         assert!(text.to_lowercase().contains("certificate"), "{text}");
 
+        // Windows' CryptoAPI chain engine doesn't anchor on in-process extra roots (it reports an
+        // untrusted root), so the "now trusted" half runs where it is honoured; on Windows the
+        // real path is a root in the system store, which this test can't install on a CI runner.
+        if cfg!(windows) {
+            return;
+        }
         let trusted = ureq::AgentBuilder::new()
             .timeout(t)
             .tls_config(tls_config_with(vec![ca.der().clone()]).unwrap())
