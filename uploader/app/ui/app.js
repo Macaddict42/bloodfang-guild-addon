@@ -183,7 +183,7 @@ function setAddonUi(state, check) {
   addonUiState = state;
   lastAddonCheck = check || lastAddonCheck;
   const c = lastAddonCheck;
-  $("addon-err").hidden = state !== "failed";
+  $("addon-err").hidden = state !== "failed" && state !== "check-failed";
   if (c) {
     $("addon-installed").textContent = c.installed || "not installed";
     $("addon-latest").textContent = c.latest || "—";
@@ -192,6 +192,7 @@ function setAddonUi(state, check) {
   }
   let text = "Checking the addon…";
   if (state === "updating") text = "Updating the addon…";
+  else if (state === "check-failed") text = "Couldn't check for an addon update.";
   else if (state === "failed") text = "The addon update did not finish.";
   else if (c?.gameRunning && c?.updateAvailable) text = "Game is running. The addon update will wait until it closes.";
   else if (c?.latest) text = "Up to date.";
@@ -219,8 +220,9 @@ function maybeMain() {
       else if (c.updateAvailable) setAddonUi("updating", c);
       else setAddonUi("uptodate", c);
     }).catch((e) => {
-      setAddonUi("failed", lastAddonCheck);
-      showErr("addon-err", "addon-err-msg", e);
+      // The reason from the app (site and GitHub answers), not a generic line.
+      setAddonUi("check-failed", lastAddonCheck);
+      showErr("addon-err", "addon-err-msg", e, "Addon check failed");
     });
     invoke("check_self_update").then(applyAppOffer).catch(() => applyAppOffer(null));
     invoke("game_running").then((g) => {
@@ -489,17 +491,19 @@ $("btn-app-update").addEventListener("click", async () => {
 listen("addon-auto", (event) => {
   const r = event?.payload;
   if (!r) return;
-  setAddonUi(r.ok ? "uptodate" : "failed", {
+  const checkFailed = !r.ok && r.phase === "check";
+  setAddonUi(r.ok ? "uptodate" : checkFailed ? "check-failed" : "failed", {
     installed: r.installed,
     latest: r.latest,
     updateAvailable: false,
     gameRunning: !!r.gameRunning,
   });
-  if (r.message) {
+  if (r.ok && r.message) {
     $("addon-state").textContent = r.message;
     $("addon-state").hidden = false;
   }
-  if (!r.ok) showErr("addon-err", "addon-err-msg", r.message, "Update failed");
+  // The state line says what failed; the error line carries the real reason.
+  if (!r.ok) showErr("addon-err", "addon-err-msg", r.message || "No reason was given.", checkFailed ? "Addon check failed" : "Update failed");
   else clearErr("addon-err");
 });
 listen("sv-changed", (event) => {
@@ -645,7 +649,7 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
             : "D:\\Program Files\\World of Warcraft\\_forever_";
         }
         if (cmd === "upload_now") {
-          if (screen === "offline") throw "couldn't reach the site: offline";
+          if (screen === "offline") throw "couldn't reach the site: example.invalid: Connection Failed: Connect error: connection refused";
           const secs = Math.floor(Date.now() / 1000);
           mock.prefs.lastUploadAt = String(secs);
           mock.prefs.lastStatus = "sent 2";
@@ -653,7 +657,7 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
           return { found: 1, sent: 1, lines: mock.prefs.lastSentLines, at: mock.prefs.lastUploadAt, status: "sent 2" };
         }
         if (cmd === "check_addon") {
-          if (screen === "offline") throw "couldn't reach GitHub: offline";
+          if (screen === "offline") throw "couldn't reach example.invalid: Connection Failed: tls connection init failed: invalid peer certificate: UnknownIssuer; GitHub: couldn't reach api.github.com: Connection Failed: tls connection init failed: invalid peer certificate: UnknownIssuer";
           const installed = mock.addonInstalled || "0.1.1";
           const latest = mock._latest || "0.1.2";
           return {

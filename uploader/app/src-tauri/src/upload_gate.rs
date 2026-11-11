@@ -61,10 +61,10 @@ pub fn upload_saved_variables(
 ) -> Result<SavedUpload, core::UploadError> {
     let files = core::saved_variables(&PathBuf::from(game_folder), addon_name);
     if files.is_empty() {
-        return Err(core::UploadError::Network(format!(
-            "No SavedVariables for {addon_name} yet. Log in with the addon, then /reload."
-        )));
+        core::log::warn("upload", &format!("no SavedVariables for {addon_name} under {game_folder}"));
+        return Err(core::UploadError::NoSavedVariables(addon_name.to_string()));
     }
+    core::log::info("upload", &format!("checking {} SavedVariables file(s)", files.len()));
     let ranks = core::RanksSource { addon: addon_name, guild: guild_name };
     Ok(saved_from_report(core::run_all(&files, site, token, state_path, Some(ranks))?))
 }
@@ -186,9 +186,27 @@ fn unix_now() -> String {
     format!("{secs}")
 }
 
+/// Errors worth an automatic log report. Waiting for SavedVariables (the addon hasn't run yet) and
+/// the site asking us to slow down are expected states, so they are only logged.
+pub fn reportable(err: &core::UploadError) -> bool {
+    !matches!(err, core::UploadError::NoSavedVariables(_) | core::UploadError::RateLimited)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_saved_variables_is_not_called_a_network_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = upload_saved_variables(&dir.path().display().to_string(), "Addon", "", "http://127.0.0.1:9", "upl_x", &dir.path().join("s.json")).unwrap_err();
+        let text = err.to_string();
+        assert!(!text.to_lowercase().contains("reach the site"), "{text}");
+        assert!(text.contains("SavedVariables for Addon"), "{text}");
+        assert!(!reportable(&err));
+        assert!(reportable(&core::UploadError::Network("x".into())));
+        assert!(reportable(&core::UploadError::Http(500, "x".into())));
+    }
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -280,6 +298,8 @@ mod tests {
         assert!(transient_retry(&core::UploadError::RateLimited, 1));
         assert!(!transient_retry(&core::UploadError::BadToken, 0));
         assert!(!transient_retry(&core::UploadError::Http(403, "no".into()), 0));
+        assert!(!transient_retry(&core::UploadError::NoSavedVariables("Addon".into()), 0));
+        assert!(!transient_retry(&core::UploadError::Local("keychain".into()), 0));
         assert!(retry_pause(1) <= std::time::Duration::from_secs(1));
     }
 

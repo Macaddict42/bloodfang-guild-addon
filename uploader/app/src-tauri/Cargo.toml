@@ -1,6 +1,6 @@
 [package]
 name = "guild-uploader-app"
-version = "0.1.2"
+version = "0.1.3"
 description = "Desktop uploader and addon updater. Files only; never touches the game process."
 authors = ["raid group"]
 edition = "2021"
@@ -40,6 +40,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 semver = "1"
 opener = "0.7"
 ring = "0.17.14"
+# macOS Update now unpacks the signed .app.tar.gz. flate2 is already in the tree; tar is small, pure Rust.
+flate2 = "1"
+tar = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
