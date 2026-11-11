@@ -9,6 +9,10 @@ on:
         description: "Also create a draft prerelease (delete afterwards for smoke builds)"
         type: boolean
         default: false
+      version:
+        description: "Version used in artifact names for a manual build (e.g. 0.1.2). Empty uses 0.1.0-ci.N."
+        type: string
+        default: ""
 permissions:
   contents: write
   id-token: write
@@ -46,8 +50,14 @@ jobs:
           ADDON_NAME: ${{ vars.ADDON_NAME }}
           GUILD_NAME: ${{ vars.GUILD_NAME }}
           GITHUB_REPO: ${{ github.repository }}
+          # Public key only. Builds without it cannot accept an update.
+          GUILD_UPLOADER_UPDATE_PUBKEY: ${{ vars.UPLOADER_UPDATE_PUBKEY }}
         run: |
           set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && -z "${GUILD_UPLOADER_UPDATE_PUBKEY:-}" ]]; then
+            echo "Repository variable UPLOADER_UPDATE_PUBKEY is empty; a release build needs the update key." >&2
+            exit 1
+          fi
           DEFAULT_SITE=""
           if [ -f "$GITHUB_WORKSPACE/uploader/app/site.url" ]; then
             DEFAULT_SITE="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/uploader/app/site.url")"
@@ -58,6 +68,22 @@ jobs:
           export ADDON_NAME="${ADDON_NAME:-}"
           export GUILD_NAME="${GUILD_NAME:-}"
           export GITHUB_REPO="${GITHUB_REPO:-$GITHUB_REPOSITORY}"
+          if [[ "${{ matrix.target }}" == "universal-apple-darwin" ]]; then
+            # tauri lipo-merges only the main binary for a universal build, but the bundler
+            # copies every Cargo [[bin]] into the .app. Build the extra binaries for both
+            # architectures and merge them where the bundler looks for them.
+            OUT="$GITHUB_WORKSPACE/uploader/target/universal-apple-darwin/release"
+            mkdir -p "$OUT"
+            for bin in updater; do
+              for arch in aarch64-apple-darwin x86_64-apple-darwin; do
+                cargo build --release --locked --bin "$bin" --target "$arch"
+              done
+              lipo -create -output "$OUT/$bin" \
+                "$GITHUB_WORKSPACE/uploader/target/aarch64-apple-darwin/release/$bin" \
+                "$GITHUB_WORKSPACE/uploader/target/x86_64-apple-darwin/release/$bin"
+              lipo -info "$OUT/$bin"
+            done
+          fi
           cargo tauri build --bundles "${{ matrix.bundles }}" --target "${{ matrix.target }}"
       - name: Windows installer hook and launcher smoke
         if: matrix.os == 'windows-2022'
@@ -79,12 +105,37 @@ jobs:
           echo "exe=$exe"
           test -n "$exe"
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$GITHUB_WORKSPACE/uploader/app/src-tauri/windows/launch-smoke.ps1" -Exe "$exe"
+      - name: macOS bundle check and app archive
+        if: matrix.platform == 'macos'
+        working-directory: uploader
+        run: |
+          set -euo pipefail
+          main=$(node -p "require('./app/src-tauri/tauri.conf.json').mainBinaryName")
+          app=$(find target -maxdepth 6 -path '*/release/bundle/macos/*.app' -type d | head -1)
+          echo "app=$app"
+          test -n "$app"
+          for bin in "$main" updater; do
+            archs=$(lipo -archs "$app/Contents/MacOS/$bin")
+            echo "$bin: $archs"
+            [[ "$archs" == *x86_64* && "$archs" == *arm64* ]] || { echo "$bin is not universal" >&2; exit 1; }
+          done
+          dmg=$(find target -path '*/release/bundle/dmg/*.dmg' -type f | head -1)
+          echo "dmg=$dmg"
+          test -n "$dmg"
+          hdiutil verify "$dmg"
+          # Plain archive of the .app for manual or scripted installs (tauri only makes one
+          # when its own updater signing is configured, which this app does not use).
+          dir=$(dirname "$app"); name=$(basename "$app")
+          COPYFILE_DISABLE=1 tar -czf "$dir/$name.tar.gz" -C "$dir" "$name"
+          ls -la "$dir"
       - name: Collect artifacts
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist
           V="${GITHUB_REF_NAME#uploader-app-v}"
-          if [[ "${GITHUB_REF_TYPE:-}" != "tag" ]]; then V="0.1.0-ci.${GITHUB_RUN_NUMBER}"; fi
+          if [[ "${GITHUB_REF_TYPE:-}" != "tag" ]]; then V="${INPUT_VERSION:-0.1.0-ci.${GITHUB_RUN_NUMBER}}"; fi
           # Workspace target dir is uploader/target (not app/src-tauri/target).
           # Avoid mapfile (missing on macOS system bash 3).
           ROOT=uploader/target
@@ -125,20 +176,39 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with: { path: dist, merge-multiple: true }
+      - name: Both platforms built
+        run: |
+          set -euo pipefail
+          ls -la dist
+          win=$(find dist -maxdepth 1 -name '*-windows-*.exe' | wc -l)
+          mac=$(find dist -maxdepth 1 -name '*-macos-*.dmg' | wc -l)
+          echo "windows installers: $win, macOS disk images: $mac"
+          if [ "$win" -lt 1 ] || [ "$mac" -lt 1 ]; then
+            echo "A release needs both the Windows installer and the macOS disk image." >&2
+            exit 1
+          fi
       - name: SHA256SUMS
-        run: cd dist && cat *.sha256 > SHA256SUMS && cat SHA256SUMS
-      - name: Publish (tag or draft)
+        run: cd dist && cat *.sha256 > SHA256SUMS && rm -f *.sha256 && cat SHA256SUMS
+      - name: Publish draft (tag) or CI draft
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           set -euo pipefail
-          NOTES="Unsigned for now. Verify SHA256SUMS and provenance: gh attestation verify <file> --repo $GITHUB_REPOSITORY"
+          NOTES="Draft. Sign both installers with scripts/uploader-sign-release.sh, then publish. Verify SHA256SUMS and provenance: gh attestation verify <file> --repo $GITHUB_REPOSITORY"
           if [[ "$GITHUB_REF" == refs/tags/uploader-app-v* ]]; then
-            # A release published with update-key-signed assets must not be replaced by this unsigned CI build.
+            # A release published with update-key-signed assets must not be replaced by this CI build.
+            # It still has to carry both platforms, each with its signature.
             if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              echo "Release $GITHUB_REF_NAME already exists; leaving its assets unchanged."
+              names=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+              echo "$names"
+              ok=1
+              for pat in '-windows-.*\.exe$' '-windows-.*\.exe\.sig$' '-macos-.*\.dmg$' '-macos-.*\.dmg\.sig$'; do
+                echo "$names" | grep -Eq -- "$pat" || { echo "Release $GITHUB_REF_NAME is missing an asset matching $pat" >&2; ok=0; }
+              done
+              [ "$ok" = 1 ] || exit 1
+              echo "Release $GITHUB_REF_NAME already exists with both platforms; leaving its assets unchanged."
               exit 0
             fi
-            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Uploader app ${GITHUB_REF_NAME#uploader-app-v}" --notes "$NOTES"
+            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Uploader app ${GITHUB_REF_NAME#uploader-app-v}" --notes "$NOTES" --draft
           else
             TAG="uploader-app-ci-${GITHUB_RUN_NUMBER}"
             gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "Uploader app CI draft ${GITHUB_RUN_NUMBER}" --notes "$NOTES" --draft --prerelease
