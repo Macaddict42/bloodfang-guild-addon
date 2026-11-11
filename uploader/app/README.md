@@ -24,9 +24,17 @@ cd app/src-tauri && cargo tauri dev
 
 ## Release
 
-Tag `uploader-app-vX.Y.Z` (or `workflow_dispatch` for a draft). Builds unsigned
-NSIS (Windows) and DMG (macOS) plus SHA256SUMS and provenance attestations.
-SignPath comes later.
+Every release ships **both** a Windows NSIS installer and a universal macOS `.dmg`.
 
-## Releases
-CI tag `uploader-app-vX.Y.Z` builds an unsigned Windows NSIS installer and a **universal** macOS `.dmg` (SPEC §18b). Do not publish without the owner's approval.
+1. Tag `uploader-app-vX.Y.Z`. CI builds both platforms (with the public update key from the
+   `UPLOADER_UPDATE_PUBKEY` repository variable) and creates a **draft** release with SHA256SUMS
+   and provenance attestations. The release job fails if either platform is missing, and a
+   release that already exists must carry both installers with their `.sig` files.
+2. On the machine that holds the update key, with the key in the environment only:
+   `scripts/uploader-sign-release.sh uploader-app-vX.Y.Z --repo OWNER/NAME --publish`
+   signs each installer (raw Ed25519 `.sig`), verifies it, updates SHA256SUMS and publishes.
+   It refuses a release without both platforms. Do not publish without the owner's approval.
+
+`workflow_dispatch` (optional `version` input for artifact names) builds both platforms as
+artifacts; `make_draft` also creates a CI draft release. Installers are not Authenticode-signed
+or Apple-notarized yet (SignPath / Apple Developer ID later).
