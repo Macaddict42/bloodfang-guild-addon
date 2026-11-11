@@ -38,6 +38,12 @@ jobs:
       - name: Core tests
         working-directory: uploader
         run: cargo test -p guild-uploader-core --locked
+      - name: App tests
+        working-directory: uploader
+        run: cargo test -p guild-uploader-app --locked
+      - name: UI tests
+        working-directory: uploader/app/ui
+        run: node --test
       - name: Install tauri-cli
         run: cargo install tauri-cli --version "^2.0.0" --locked
       - name: Generate platform icons from PNG
@@ -186,9 +192,10 @@ jobs:
           ls -la dist
           win=$(find dist -maxdepth 1 -name '*-windows-*.exe' | wc -l)
           mac=$(find dist -maxdepth 1 -name '*-macos-*.dmg' | wc -l)
-          echo "windows installers: $win, macOS disk images: $mac"
-          if [ "$win" -lt 1 ] || [ "$mac" -lt 1 ]; then
-            echo "A release needs both the Windows installer and the macOS disk image." >&2
+          macapp=$(find dist -maxdepth 1 -name '*-macos-*.app.tar.gz' | wc -l)
+          echo "windows installers: $win, macOS disk images: $mac, macOS app archives: $macapp"
+          if [ "$win" -lt 1 ] || [ "$mac" -lt 1 ] || [ "$macapp" -lt 1 ]; then
+            echo "A release needs the Windows installer, the macOS disk image and the macOS app archive (used by Update now)." >&2
             exit 1
           fi
       - name: SHA256SUMS
@@ -205,7 +212,7 @@ jobs:
               names=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
               echo "$names"
               ok=1
-              for pat in '-windows-.*\.exe$' '-windows-.*\.exe\.sig$' '-macos-.*\.dmg$' '-macos-.*\.dmg\.sig$'; do
+              for pat in '-windows-.*\.exe$' '-windows-.*\.exe\.sig$' '-macos-.*\.dmg$' '-macos-.*\.dmg\.sig$' '-macos-.*\.app\.tar\.gz$' '-macos-.*\.app\.tar\.gz\.sig$'; do
                 echo "$names" | grep -Eq -- "$pat" || { echo "Release $GITHUB_REF_NAME is missing an asset matching $pat" >&2; ok=0; }
               done
               [ "$ok" = 1 ] || exit 1

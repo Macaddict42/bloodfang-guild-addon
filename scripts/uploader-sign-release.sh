@@ -4,7 +4,8 @@
 #   GUILD_UPLOADER_SIGNING_PRIVATE_KEY_B64=... UPLOADER_UPDATE_PUBKEY=<64 hex> \
 #     scripts/uploader-sign-release.sh uploader-app-vX.Y.Z [--repo OWNER/NAME] [--publish]
 #
-# - Refuses unless the release has a Windows setup .exe AND a macOS .dmg.
+# - Refuses unless the release has a Windows setup .exe, a macOS .dmg AND a macOS .app.tar.gz
+#   (the archive macOS Update now installs).
 # - Each installer (.exe, .dmg, .app.tar.gz) gets a raw 64-byte Ed25519 <file>.sig over its bytes.
 #   Existing signatures are verified, never replaced. Each new signature is verified before upload.
 # - SHA256SUMS is rewritten to list every asset (existing lines are kept byte-for-byte).
@@ -32,6 +33,8 @@ win=$(ls | grep -E -- '-windows-.*-setup\.exe$' || true)
 mac=$(ls | grep -E -- '-macos-.*\.dmg$' || true)
 [ -n "$win" ] || { echo "no Windows setup .exe in $TAG" >&2; exit 1; }
 [ -n "$mac" ] || { echo "no macOS .dmg in $TAG" >&2; exit 1; }
+macapp=$(ls | grep -E -- '-macos-.*\.app\.tar\.gz$' || true)
+[ -n "$macapp" ] || { echo "no macOS .app.tar.gz in $TAG (Update now on Mac needs it)" >&2; exit 1; }
 
 new_sigs=()
 for f in $(ls | grep -E '\.(exe|dmg|app\.tar\.gz)$'); do

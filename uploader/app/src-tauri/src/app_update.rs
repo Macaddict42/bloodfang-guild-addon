@@ -191,6 +191,12 @@ pub fn fetch_published(repo: &str) -> Result<Fetched, FetchFail> {
     Ok(Fetched { version: release.version.to_string(), installer, sha256_hex, signature })
 }
 
+/// macOS replaces the bundle itself and restarts, so the Windows wording doesn't fit.
+pub fn mac_installed_message(verified: &str) -> String {
+    let version = verified.strip_prefix("Verified ").and_then(|r| r.split(". ").next()).unwrap_or("the update");
+    format!("Verified {version}. The app was updated and is restarting.")
+}
+
 /// Writes the already-verified bytes and starts that file. Tests do not call this with real bytes.
 pub fn launch_verified_installer(bytes: &[u8]) -> Result<(), String> {
     if bytes.is_empty() {
@@ -208,6 +214,11 @@ mod tests {
     use super::*;
     use ring::rand::SystemRandom;
     use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    #[test]
+    fn mac_message_names_the_version() {
+        assert_eq!(mac_installed_message("Verified 0.1.3. The installer was started. This app was not restarted by the updater."), "Verified 0.1.3. The app was updated and is restarting.");
+    }
 
     #[test]
     fn later_hides_that_version_and_a_newer_one_asks_again() {

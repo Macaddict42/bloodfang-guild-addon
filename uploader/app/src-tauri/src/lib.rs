@@ -4,6 +4,8 @@ mod autostart;
 mod baked;
 mod config;
 mod install_hook;
+mod mac_update;
+mod reports;
 mod tray_life;
 mod upload_gate;
 
@@ -202,8 +204,15 @@ async fn probe_game_folder(state: State<'_, AppState>) -> Result<FolderView, Str
         core::probe_game_folder(path.as_deref())
     });
     match tokio::time::timeout(Duration::from_millis(1500), work).await {
-        Ok(Ok(probe)) => Ok(folder_view(probe)),
-        _ => Ok(FolderView { resolved: None, source: "none", show_folder_ui: true, choices: vec![] }),
+        Ok(Ok(probe)) => {
+            let view = folder_view(probe);
+            core::log::info("folder", &format!("game folder: {} (source {}, {} other choice(s), ask {})", view.resolved.as_deref().unwrap_or("not found"), view.source, view.choices.len(), view.show_folder_ui));
+            Ok(view)
+        }
+        _ => {
+            core::log::warn("folder", "game folder detection timed out after 1.5 s");
+            Ok(FolderView { resolved: None, source: "none", show_folder_ui: true, choices: vec![] })
+        }
     }
 }
 
@@ -232,10 +241,14 @@ async fn connect_browser(state: State<'_, AppState>, switch_account: Option<bool
     }
     match result {
         Ok(Ok(token)) => {
-            config::set_token(&token)?;
+            config::set_token(&token).inspect_err(|e| core::log::error("sign-in", &format!("couldn't save the sign-in: {e}")))?;
+            core::log::info("sign-in", "signed in");
             Ok(ConnectOutcome { has_token: true })
         }
-        Ok(Err(err)) => Err(err.to_string()),
+        Ok(Err(err)) => {
+            core::log::warn("sign-in", &format!("sign-in did not finish: {err}"));
+            Err(err.to_string())
+        }
         Err(err) => Err(err),
     }
 }
@@ -267,6 +280,7 @@ fn remember_folder(state: &AppState, folder: &str, only_if_empty: bool, start_at
         return Ok(());
     }
     prefs.game_folder = path.display().to_string();
+    core::log::info("folder", &format!("game folder saved: {}", prefs.game_folder));
     prefs.setup_done = true;
     if prefs.addon_name.is_empty() {
         prefs.addon_name = defaults_addon();
@@ -328,6 +342,7 @@ struct UploadResult {
     found: usize,
     sent: usize,
     lines: Vec<String>,
+    counts: Vec<config::SentCount>,
     at: String,
     status: String,
     requested: bool,
@@ -337,10 +352,19 @@ fn do_upload(prefs: &config::Prefs) -> Result<upload_gate::SavedUpload, core::Up
     let token = match config::get_token() {
         Ok(Some(token)) => token,
         Ok(None) => return Err(core::UploadError::BadToken),
-        Err(err) => return Err(core::UploadError::Network(err)),
+        Err(err) => return Err(core::UploadError::Local(format!("couldn't read the saved sign-in from the system credential store: {err}"))),
     };
-    let site = baked::site_url().map_err(|err| core::UploadError::Network(err))?;
+    let site = baked::site_url().map_err(core::UploadError::Local)?;
     upload_gate::upload_saved_variables(&prefs.game_folder, &prefs.addon_name, &baked::guild_name(), &site, &token, &config::state_path(prefs))
+}
+
+/// Log every upload outcome; send a report for failures that point at a real problem.
+fn note_upload_result(prefs: &config::Prefs, result: &Result<upload_gate::SavedUpload, core::UploadError>) {
+    match result {
+        Ok(u) => core::log::info("upload", &format!("done: found {}, sent {}, status {:?}, lines {:?}", u.found, u.sent, u.status, u.lines)),
+        Err(err) if upload_gate::reportable(err) => reports::report(core::report::code::UPLOAD, &format!("upload failed: {err}"), prefs.last_addon_version.clone()),
+        Err(err) => core::log::warn("upload", &format!("upload not done: {err}")),
+    }
 }
 
 fn upload_result(upload: &upload_gate::SavedUpload) -> UploadResult {
@@ -348,6 +372,7 @@ fn upload_result(upload: &upload_gate::SavedUpload) -> UploadResult {
         found: upload.found,
         sent: upload.sent,
         lines: upload.lines.clone(),
+        counts: upload.counts.clone(),
         at: upload.at.clone(),
         status: upload.status.clone(),
         requested: upload.requested,
@@ -359,6 +384,7 @@ fn stored_result(prefs: &config::Prefs) -> UploadResult {
         found: 0,
         sent: 0,
         lines: prefs.last_sent_lines.clone().unwrap_or_default(),
+        counts: prefs.last_sent_counts.clone().unwrap_or_default(),
         at: prefs.last_upload_at.clone().unwrap_or_default(),
         status: prefs.last_status.clone().unwrap_or_else(|| "nothing new".into()),
         requested: true,
@@ -371,6 +397,7 @@ fn notice_ok(upload: &upload_gate::SavedUpload) -> WatchNotice {
         found: upload.found,
         sent: upload.sent,
         lines: upload.lines.clone(),
+        counts: upload.counts.clone(),
         at: upload.at.clone(),
         status: upload.status.clone(),
         requested: upload.requested,
@@ -379,7 +406,7 @@ fn notice_ok(upload: &upload_gate::SavedUpload) -> WatchNotice {
 }
 
 fn notice_err(message: String) -> WatchNotice {
-    WatchNotice { ok: false, found: 0, sent: 0, lines: Vec::new(), at: String::new(), status: String::new(), requested: false, error: message }
+    WatchNotice { ok: false, found: 0, sent: 0, lines: Vec::new(), counts: Vec::new(), at: String::new(), status: String::new(), requested: false, error: message }
 }
 
 #[derive(Serialize)]
@@ -389,6 +416,7 @@ struct WatchNotice {
     found: usize,
     sent: usize,
     lines: Vec<String>,
+    counts: Vec<config::SentCount>,
     at: String,
     status: String,
     requested: bool,
@@ -416,17 +444,20 @@ fn upload_once(app: &AppHandle) -> Result<(), String> {
         let prefs = state.prefs.lock().map_err(|e| e.to_string())?.clone();
         (prefs, state.upload_seq.note_start())
     };
+    let _ = app.emit("upload-started", ());
     let mut attempt = 0;
     let result = loop {
         match do_upload(&prefs) {
             Ok(upload) => break Ok(upload),
             Err(err) if upload_gate::transient_retry(&err, attempt) => {
                 attempt += 1;
+                core::log::warn("upload", &format!("attempt {attempt} failed, retrying: {err}"));
                 std::thread::sleep(upload_gate::retry_pause(attempt));
             }
             Err(err) => break Err(err),
         }
     };
+    note_upload_result(&prefs, &result);
     let step = {
         let mut prefs = state.prefs.lock().map_err(|e| e.to_string())?;
         match upload_gate::finish_upload(&mut prefs, &state.upload_seq, seq, result) {
@@ -456,7 +487,14 @@ async fn upload_now(state: State<'_, AppState>) -> Result<UploadResult, String> 
         let prefs = state.prefs.lock().map_err(|e| e.to_string())?.clone();
         (prefs, state.upload_seq.note_start())
     };
-    let result = tauri::async_runtime::spawn_blocking(move || do_upload(&prefs)).await.map_err(|e| e.to_string())?;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        core::log::info("upload", "upload requested from the window");
+        let r = do_upload(&prefs);
+        note_upload_result(&prefs, &r);
+        r
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     let mut prefs = state.prefs.lock().map_err(|e| e.to_string())?;
     match upload_gate::finish_upload(&mut prefs, &state.upload_seq, seq, result) {
         upload_gate::Finish::Applied(upload) => {
@@ -490,17 +528,39 @@ fn semver_gt(a: &str, b: &str) -> bool {
     }
 }
 
+/// Newest addon release: the site's `/api/addon/latest` first, then GitHub. No release found
+/// anywhere is an error with the reason, not a silent "nothing to do".
+fn find_latest_addon(prefs: &config::Prefs) -> Result<core::AddonRelease, String> {
+    let site = baked::site_url().ok();
+    let repo = defaults_repo();
+    match core::latest_addon_any(site.as_deref(), &repo, &prefs.addon_name) {
+        Ok(Some(release)) => Ok(release),
+        Ok(None) => Err(format!("no {} release was found on the site or on GitHub", prefs.addon_name)),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn installed_addon(prefs: &config::Prefs) -> Option<String> {
+    if prefs.game_folder.is_empty() {
+        None
+    } else {
+        core::installed_version(&core::addons_dir(PathBuf::from(&prefs.game_folder).as_path()), &prefs.addon_name).map(|v| v.to_string())
+    }
+}
+
 #[tauri::command]
 async fn check_addon(state: State<'_, AppState>) -> Result<AddonCheck, String> {
     let prefs = state.prefs.lock().map_err(|e| e.to_string())?.clone();
-    let repo = defaults_repo();
     tauri::async_runtime::spawn_blocking(move || {
-        let installed = if prefs.game_folder.is_empty() {
-            None
-        } else {
-            core::installed_version(&core::addons_dir(PathBuf::from(&prefs.game_folder).as_path()), &prefs.addon_name).map(|v| v.to_string())
+        let installed = installed_addon(&prefs);
+        core::log::info("addon", &format!("check: installed {}", installed.as_deref().unwrap_or("none")));
+        let latest = match find_latest_addon(&prefs) {
+            Ok(release) => Some(release),
+            Err(err) => {
+                reports::report(core::report::code::ADDON_CHECK, &format!("addon check failed: {err}"), installed.clone());
+                return Err(err);
+            }
         };
-        let latest = core::latest_addon(&repo, &prefs.addon_name).map_err(|e| e.to_string())?;
         let (tag, ver) = match &latest {
             Some(release) => (Some(release.tag.clone()), Some(release.version.to_string())),
             None => (None, None),
@@ -547,10 +607,11 @@ async fn game_running() -> Result<GameRunning, String> {
 #[tauri::command]
 async fn update_addon(state: State<'_, AppState>) -> Result<String, String> {
     let prefs = state.prefs.lock().map_err(|e| e.to_string())?.clone();
-    let repo = defaults_repo();
     let version = tauri::async_runtime::spawn_blocking(move || {
-        let release = core::latest_addon(&repo, &prefs.addon_name).map_err(|e| e.to_string())?.ok_or("no addon release found on GitHub")?;
-        core::install_addon(&release, PathBuf::from(&prefs.game_folder).as_path(), &prefs.addon_name).map_err(|e| e.to_string())
+        let release = find_latest_addon(&prefs).inspect_err(|err| {
+            reports::report(core::report::code::ADDON_CHECK, &format!("addon check failed: {err}"), installed_addon(&prefs));
+        })?;
+        install_logged(&release, &prefs).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -656,6 +717,8 @@ struct AddonAutoNotice {
     installed: String,
     latest: String,
     message: String,
+    /// "check" (finding the newest release) or "install"; the window words its line by this.
+    phase: &'static str,
 }
 
 fn spawn_addon_auto(app: AppHandle) {
@@ -701,6 +764,22 @@ fn sleep_cancellable(total: Duration, stop: &AtomicBool) {
     }
 }
 
+/// Install with a log line before and after; a failure is reported.
+fn install_logged(release: &core::AddonRelease, prefs: &config::Prefs) -> Result<String, core::UpdateError> {
+    let addons = core::addons_dir(PathBuf::from(&prefs.game_folder).as_path());
+    core::log::info("addon", &format!("installing {} from {} ({}) into {}", release.version, release.source, release.zip_name, addons.display()));
+    match core::install_addon(release, PathBuf::from(&prefs.game_folder).as_path(), &prefs.addon_name) {
+        Ok(v) => {
+            core::log::info("addon", &format!("installed {v}"));
+            Ok(v)
+        }
+        Err(err) => {
+            reports::report(core::report::code::ADDON_INSTALL, &format!("addon install of {} failed: {err}", release.version), installed_addon(prefs));
+            Err(err)
+        }
+    }
+}
+
 fn addon_auto_once(app: &AppHandle) -> AddonAutoNotice {
     let state = app.state::<AppState>();
     let prefs = match state.prefs.lock() {
@@ -713,32 +792,27 @@ fn addon_auto_once(app: &AppHandle) -> AddonAutoNotice {
                 installed: String::new(),
                 latest: String::new(),
                 message: err.to_string(),
+                phase: "check",
             }
         }
     };
-    let repo = defaults_repo();
     let game_running = core::game_seems_running();
-    let latest = if repo.is_empty() { Ok(None) } else { core::latest_addon(&repo, &prefs.addon_name) };
-    let (latest_ver, release) = match latest {
-        Ok(release) => {
-            let ver = release.as_ref().map(|item| item.version.to_string()).unwrap_or_default();
-            (ver, release)
-        }
+    let installed = installed_addon(&prefs);
+    core::log::info("addon", &format!("auto check: installed {}, game running {game_running}", installed.as_deref().unwrap_or("none")));
+    let (latest_ver, release) = match find_latest_addon(&prefs) {
+        Ok(release) => (release.version.to_string(), Some(release)),
         Err(err) => {
+            reports::report(core::report::code::ADDON_CHECK, &format!("addon check failed: {err}"), installed.clone());
             return AddonAutoNotice {
                 ok: false,
                 retry: true,
                 game_running,
-                installed: prefs.last_addon_version.clone().unwrap_or_default(),
+                installed: installed.clone().unwrap_or_default(),
                 latest: String::new(),
-                message: err.to_string(),
-            }
+                message: err,
+                phase: "check",
+            };
         }
-    };
-    let installed = if prefs.game_folder.is_empty() {
-        None
-    } else {
-        core::installed_version(&core::addons_dir(PathBuf::from(&prefs.game_folder).as_path()), &prefs.addon_name).map(|v| v.to_string())
     };
     let update_available = match (&installed, &release) {
         (Some(installed), Some(release)) => semver_gt(&release.version.to_string(), installed),
@@ -755,7 +829,8 @@ fn addon_auto_once(app: &AppHandle) -> AddonAutoNotice {
             game_running,
             installed: installed_text,
             latest: latest_ver.clone(),
-            message: if latest_ver.is_empty() { "Couldn't check for an addon update.".into() } else { "Up to date.".into() },
+            message: "Up to date.".into(),
+            phase: "check",
         },
         addon_auto::AddonAuto::KeepSkipped => AddonAutoNotice {
             ok: true,
@@ -764,6 +839,7 @@ fn addon_auto_once(app: &AppHandle) -> AddonAutoNotice {
             installed: installed_text,
             latest: latest_ver,
             message: "This addon version was set aside earlier. It stays as it is.".into(),
+            phase: "check",
         },
         addon_auto::AddonAuto::WaitForGame => AddonAutoNotice {
             ok: true,
@@ -772,6 +848,7 @@ fn addon_auto_once(app: &AppHandle) -> AddonAutoNotice {
             installed: installed_text,
             latest: latest_ver,
             message: "Game is running. The addon update will wait until it closes.".into(),
+            phase: "check",
         },
         addon_auto::AddonAuto::Install => {
             let Some(release) = release else {
@@ -782,9 +859,10 @@ fn addon_auto_once(app: &AppHandle) -> AddonAutoNotice {
                     installed: installed_text,
                     latest: latest_ver,
                     message: "Up to date.".into(),
+                    phase: "check",
                 };
             };
-            match core::install_addon(&release, PathBuf::from(&prefs.game_folder).as_path(), &prefs.addon_name) {
+            match install_logged(&release, &prefs) {
                 Ok(version) => {
                     if let Ok(mut prefs) = state.prefs.lock() {
                         prefs.last_addon_version = Some(version.clone());
@@ -798,6 +876,7 @@ fn addon_auto_once(app: &AppHandle) -> AddonAutoNotice {
                         installed: version.clone(),
                         latest: version,
                         message: format!("Installed {latest_ver}."),
+                        phase: "install",
                     }
                 }
                 Err(err) => AddonAutoNotice {
@@ -807,6 +886,7 @@ fn addon_auto_once(app: &AppHandle) -> AddonAutoNotice {
                     installed: installed_text,
                     latest: latest_ver,
                     message: err.to_string(),
+                    phase: "install",
                 },
             }
         }
@@ -832,7 +912,11 @@ async fn check_self_update(state: State<'_, AppState>) -> Result<SelfCheck, Stri
     }
     let current_for_check = current.clone();
     let found = tauri::async_runtime::spawn_blocking(move || -> Result<(String, Option<String>, bool), String> {
-        let latest = core::latest_app(&repo).map_err(|e| e.to_string())?;
+        let latest = core::latest_app(&repo).map_err(|e| {
+            reports::report(core::report::code::APP_UPDATE_CHECK, &format!("app update check failed: {e}"), None);
+            e.to_string()
+        })?;
+        core::log::info("app-update", &format!("check: running {current_for_check}, newest {}", latest.as_ref().map(|r| r.version.to_string()).unwrap_or_else(|| "none".into())));
         let ver = latest.as_ref().map(|release| release.version.to_string());
         let update_available = match (&ver, semver::Version::parse(&current_for_check)) {
             (Some(latest), Ok(current)) => semver::Version::parse(latest).map(|lv| lv > current).unwrap_or(false),
@@ -865,19 +949,53 @@ struct AppUpdateGate {
 }
 
 #[tauri::command]
-async fn accept_app_update() -> Result<AppUpdateGate, String> {
+async fn accept_app_update(app: AppHandle) -> Result<AppUpdateGate, String> {
     let repo = defaults_repo();
     let result = tauri::async_runtime::spawn_blocking(move || {
+        core::log::info("app-update", "Update now chosen");
         app_update::decide(
             app_update::Choice::UpdateNow,
             &app_update::trust_from_build(),
             || app_update::fetch_published(&repo),
-            app_update::launch_verified_installer,
+            platform_install,
         )
     })
     .await
     .map_err(|e| e.to_string())?;
-    Ok(AppUpdateGate { installed: result.installed, message: result.message })
+    if result.installed {
+        core::log::info("app-update", &result.message);
+    } else if result.message == app_update::NO_TRUST_KEY {
+        core::log::warn("app-update", &result.message);
+    } else {
+        reports::report(core::report::code::APP_UPDATE_INSTALL, &format!("app update failed: {}", result.message), None);
+    }
+    let message = if result.installed && cfg!(target_os = "macos") { app_update::mac_installed_message(&result.message) } else { result.message };
+    #[cfg(target_os = "macos")]
+    if result.installed {
+        // Let the window show the message, then start the new bundle in place of this one.
+        let handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(1500));
+            core::log::info("app-update", "restarting into the new version");
+            handle.restart();
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+    Ok(AppUpdateGate { installed: result.installed, message })
+}
+
+/// Windows starts the verified NSIS installer (unchanged). macOS replaces the running .app with
+/// the verified .app.tar.gz.
+fn platform_install(bytes: &[u8]) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        mac_update::install_verified_archive(bytes)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        app_update::launch_verified_installer(bytes)
+    }
 }
 
 #[tauri::command]
@@ -934,6 +1052,34 @@ fn install_tray(app: &tauri::App) -> Result<(), String> {
     Ok(())
 }
 
+/// Open the log file and write the startup facts. Paths in the log have the home folder name
+/// replaced; see core::log.
+fn start_log(app: &tauri::App) {
+    let product = app.config().product_name.clone().unwrap_or_else(|| "guild-uploader".into());
+    if let Some(dir) = core::log::default_dir(&product) {
+        if let Err(e) = core::log::init(&dir) {
+            eprintln!("log file unavailable: {e}");
+            return;
+        }
+        core::log::info("start", &format!("{product} {} on {} {}, log folder {}", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH, dir.display()));
+    }
+    let state = app.state::<AppState>();
+    let origin = state.origin.lock().map(|o| origin_name(*o)).unwrap_or("unknown");
+    let prefs = state.prefs.lock().map(|p| p.clone()).unwrap_or_default();
+    core::log::info("start", &format!(
+        "settings {origin}; site {}; addon {:?}; game folder {:?}; last addon version {:?}; hidden launch {}; TLS trust {:?}",
+        if baked::site_host().is_empty() { "not configured".to_string() } else { baked::site_host() },
+        prefs.addon_name,
+        prefs.game_folder,
+        prefs.last_addon_version,
+        autostart::launched_hidden(),
+        core::http::TRUST,
+    ));
+    if let Err(e) = core::http::tls_config() {
+        core::log::error("tls", &e);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let loaded = config::load_prefs();
@@ -980,6 +1126,7 @@ pub fn run() {
             pick_folder
         ])
         .setup(|app| {
+            start_log(app);
             let tray_ready = match install_tray(app) {
                 Ok(()) => true,
                 Err(err) => {

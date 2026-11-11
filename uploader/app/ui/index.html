@@ -63,10 +63,10 @@
       <dl class="status">
         <div><dt>Last upload</dt><dd id="last-upload">Never</dd></div>
         <div id="last-checked-row" hidden><dt>Last checked</dt><dd id="last-checked">—</dd></div>
-        <div><dt>Status</dt><dd id="last-status">Waiting for SavedVariables</dd></div>
+        <div><dt>Status</dt><dd id="last-status">Not uploaded yet</dd></div>
         <div><dt>Addon</dt><dd id="addon-ver">—</dd></div>
       </dl>
-      <p id="what-sent" class="detail" hidden><span class="lbl">What was sent</span><span id="what-sent-body"></span></p>
+      <div id="what-sent" class="sent" hidden><span class="lbl" id="what-sent-lbl">What was sent</span><ul id="what-sent-body"></ul></div>
       <div id="upload-err" class="err" role="alert" hidden>
         <i aria-hidden="true"></i>
         <div>
@@ -74,7 +74,6 @@
           <span id="upload-err-msg"></span>
         </div>
       </div>
-      <p id="upload-ok" class="note ok" hidden></p>
       <p id="folder-main" class="detail" hidden><span class="lbl">Game folder</span><span id="folder-main-body"></span></p>
       <label class="check"><input id="start-login-main" type="checkbox" /> Start at login</label>
       <div class="actions">

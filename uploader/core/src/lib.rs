@@ -3,9 +3,13 @@
 //! the game process, and it never edits SavedVariables.
 pub mod browser_auth;
 pub mod detect;
+mod envelope;
+pub mod http;
 pub mod launch;
+pub mod log;
 pub mod process;
 pub mod ranks;
+pub mod report;
 pub mod update;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -14,11 +18,12 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub use envelope::envelope_count;
 pub use detect::{candidates, folder_acceptable, looks_like_game_dir, probe_explicit, probe_game_folder, FolderProbe, FolderSource};
 pub use launch::quote_windows_run;
 pub use process::{background_command, game_seems_running, is_game_process, CREATE_NO_WINDOW};
 pub use ranks::{newest_guild_ranks, parse_guild_block, post_ranks, GuildRanks, RanksMark, RanksOutcome};
-pub use update::{latest_addon, latest_app, install_addon, installed_version, addons_dir, download_bytes, download_text, sha256_hex, sums_entry, AddonRelease, UpdateError};
+pub use update::{latest_addon, latest_addon_any, latest_app, install_addon, installed_version, addons_dir, download_bytes, download_text, sha256_hex, sums_entry, AddonRelease, UpdateError};
 
 /// Types the site's uploader endpoint accepts.
 pub const TYPES: &[&str] = &["gbank", "recipes", "ranks"];
@@ -68,7 +73,16 @@ impl State {
 pub struct Outcome { #[serde(rename = "type")] pub ty: Option<String>, pub ok: bool, pub error: Option<String> }
 
 #[derive(Debug)]
-pub enum UploadError { BadToken, RateLimited, Http(u16, String), Network(String) }
+pub enum UploadError {
+    BadToken,
+    RateLimited,
+    Http(u16, String),
+    Network(String),
+    /// No SavedVariables file yet: the addon hasn't run (or saved) on this computer.
+    NoSavedVariables(String),
+    /// A problem on this computer before anything was sent (credential store, build settings).
+    Local(String),
+}
 impl std::fmt::Display for UploadError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
@@ -76,6 +90,8 @@ impl std::fmt::Display for UploadError {
             UploadError::RateLimited => write!(f, "the site asked us to slow down; try again in a minute"),
             UploadError::Http(c, b) => write!(f, "the site answered {c}: {b}"),
             UploadError::Network(e) => write!(f, "couldn't reach the site: {e}"),
+            UploadError::NoSavedVariables(addon) => write!(f, "no SavedVariables for {addon} yet. Log in with the addon, then /reload"),
+            UploadError::Local(e) => write!(f, "{e}"),
         }
     }
 }
@@ -97,7 +113,7 @@ pub fn interpret_ingest(status: u16, body: &str) -> Result<Vec<Outcome>, UploadE
     match status {
         200 => {
             #[derive(Deserialize)] struct Body { results: Vec<Outcome> }
-            let parsed = serde_json::from_str::<Body>(body).map_err(|e| UploadError::Network(e.to_string()))?;
+            let parsed = serde_json::from_str::<Body>(body).map_err(|e| UploadError::Http(200, format!("unreadable answer ({e})")))?;
             Ok(parsed.results.into_iter().map(redact_outcome).collect())
         }
         401 => {
@@ -136,15 +152,20 @@ fn redact_uploader_token(body: &str) -> String {
 
 pub fn post(site: &str, token: &str, strings: &[String]) -> Result<Vec<Outcome>, UploadError> {
     let url = format!("{}/api/uploader/ingest", site.trim_end_matches('/'));
-    let res = ureq::post(&url)
+    let res = http::site_agent()
+        .post(&url)
         .set("Authorization", &format!("Bearer {token}"))
-        .timeout(std::time::Duration::from_secs(30))
         .send_json(serde_json::json!({ "strings": strings }));
-    match res {
+    let out = match res {
         Ok(r) => interpret_ingest(200, &r.into_string().unwrap_or_default()),
         Err(ureq::Error::Status(code, r)) => interpret_ingest(code, &r.into_string().unwrap_or_default()),
-        Err(e) => Err(UploadError::Network(e.to_string())),
+        Err(ureq::Error::Transport(t)) => Err(UploadError::Network(http::error_chain(&t))),
+    };
+    match &out {
+        Ok(results) => log::info("upload", &format!("ingest {} string(s): {}", strings.len(), results.iter().map(|o| format!("{} {}", o.ty.as_deref().unwrap_or("?"), if o.ok { "ok" } else { o.error.as_deref().unwrap_or("refused") })).collect::<Vec<_>>().join(", "))),
+        Err(e) => log::error("upload", &format!("ingest {} string(s) failed: {e}", strings.len())),
     }
+    out
 }
 
 #[derive(Debug)]
@@ -154,6 +175,8 @@ pub struct Report {
     pub results: Vec<(String, Outcome)>,
     /// Rank names, when a block was sent on this pass.
     pub ranks: Option<RanksOutcome>,
+    /// How many names were in the accepted rank-name block, if one was stored.
+    pub ranks_count: Option<usize>,
 }
 
 impl Report {
@@ -185,6 +208,9 @@ pub fn run_all(files: &[PathBuf], site: &str, token: &str, state_path: &Path, ra
         state.ranks_last = Some(mark);
         let _ = state.save(state_path);
     }
+    if matches!(outcome, RanksOutcome::Stored(_)) {
+        report.ranks_count = Some(block.ranks.len());
+    }
     report.ranks = Some(outcome);
     Ok(report)
 }
@@ -204,7 +230,7 @@ fn run_strings(files: &[PathBuf], site: &str, token: &str, state_path: &Path) ->
         }
         let _ = state.save(state_path);
     }
-    Ok(Report { found, sent: todo.len(), results, ranks: None })
+    Ok(Report { found, sent: todo.len(), results, ranks: None, ranks_count: None })
 }
 
 #[cfg(test)]

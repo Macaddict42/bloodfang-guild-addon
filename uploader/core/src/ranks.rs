@@ -424,16 +424,17 @@ pub fn interpret_ranks(status: u16, body: &str) -> RanksOutcome {
 /// `POST {site}/api/uploader/ranks` with `{guild, t, ranks}` and the Bearer uploader token.
 pub fn post_ranks(site: &str, token: &str, g: &GuildRanks) -> RanksOutcome {
     let url = format!("{}/api/uploader/ranks", site.trim_end_matches('/'));
-    let res = ureq::post(&url)
+    let res = crate::http::site_agent()
+        .post(&url)
         .set("Authorization", &format!("Bearer {token}"))
-        .set("User-Agent", "guild-uploader")
-        .timeout(std::time::Duration::from_secs(30))
         .send_json(serde_json::json!({ "guild": g.guild, "t": g.t, "ranks": g.ranks }));
-    match res {
+    let out = match res {
         Ok(r) => interpret_ranks(200, &r.into_string().unwrap_or_default()),
         Err(ureq::Error::Status(code, r)) => interpret_ranks(code, &r.into_string().unwrap_or_default()),
-        Err(_) => RanksOutcome::Retry("couldn't reach the site for rank names".into()),
-    }
+        Err(ureq::Error::Transport(t)) => RanksOutcome::Retry(format!("couldn't reach the site for rank names: {}", crate::http::error_chain(&t))),
+    };
+    crate::log::info("upload", &format!("rank names ({} ranks): {}", g.ranks.len(), out.line()));
+    out
 }
 
 #[cfg(test)]

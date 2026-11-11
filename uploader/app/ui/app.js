@@ -27,45 +27,24 @@ const listen = async (event, handler) => {
 
 const linesApi = () => window.uploaderLines;
 
-function formatUploadTime(raw) {
-  if (raw == null || raw === "" || raw === "—") return "Never";
-  let d;
-  if (typeof raw === "number" || /^\d{9,12}$/.test(String(raw).trim())) {
-    d = new Date(Number(raw) * 1000);
-  } else {
-    d = new Date(raw);
+function renderSentList(heading, items) {
+  const box = $("what-sent");
+  const lbl = $("what-sent-lbl");
+  const body = $("what-sent-body");
+  if (!box) return;
+  if (!heading || !items || !items.length) {
+    box.hidden = true;
+    if (body) body.replaceChildren();
+    return;
   }
-  if (Number.isNaN(d.getTime())) return String(raw);
-  const now = Date.now();
-  const diffSec = Math.round((now - d.getTime()) / 1000);
-  if (diffSec >= 0 && diffSec < 60) return "Just now";
-  if (diffSec >= 60 && diffSec < 3600) {
-    const m = Math.floor(diffSec / 60);
-    return m === 1 ? "1 minute ago" : `${m} minutes ago`;
+  if (lbl) lbl.textContent = heading;
+  body.replaceChildren();
+  for (const text of items) {
+    const li = document.createElement("li");
+    li.textContent = text;
+    body.appendChild(li);
   }
-  if (diffSec >= 3600 && diffSec < 86400) {
-    const h = Math.floor(diffSec / 3600);
-    return h === 1 ? "1 hour ago" : `${h} hours ago`;
-  }
-  if (diffSec >= 86400 && diffSec < 172800) return "Yesterday";
-  return d.toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
-}
-
-function formatStatus(raw, sent) {
-  if (raw == null || raw === "" || raw === "—") return "Waiting for SavedVariables";
-  const m = String(raw).match(/^sent\s+(\d+)$/i);
-  if (m) {
-    const n = Number(m[1]);
-    return n === 0 ? "Nothing new" : `Sent ${n}`;
-  }
-  if (String(raw).toLowerCase() === "nothing new") return "Nothing new";
-  if (String(raw).toLowerCase() === "ready") return "Ready";
-  if (typeof sent === "number") return sent === 0 ? "Nothing new" : `Sent ${sent}`;
-  return String(raw);
-}
-
-function humanizeLines(lines) {
-  return linesApi().humanizeUploadLines(lines);
+  box.hidden = false;
 }
 
 function showRecovery(phase) {
@@ -157,25 +136,38 @@ function setFolderUi(showUi, choices) {
 }
 
 let lastUploadAt = null;
+let lastSentLines = null;
+let lastSentCounts = null;
 
 function setLastChecked(uploadAt, checkedAt) {
   const show = linesApi().showLastChecked(uploadAt, checkedAt);
   $("last-checked-row").hidden = !show;
-  if (show) $("last-checked").textContent = formatUploadTime(checkedAt);
+  if (show) $("last-checked").textContent = linesApi().formatUploadTime(checkedAt);
 }
 
 function fillMainFromPrefs(prefs) {
-  $("last-upload").textContent = formatUploadTime(prefs.lastUploadAt);
+  $("last-upload").textContent = linesApi().formatUploadTime(prefs.lastUploadAt);
   lastUploadAt = prefs.lastUploadAt || null;
+  lastSentLines = prefs.lastSentLines || null;
+  lastSentCounts = prefs.lastSentCounts || null;
   setLastChecked(prefs.lastUploadAt, prefs.lastCheckedAt);
-  $("last-status").textContent = formatStatus(prefs.lastStatus);
+  const checkedOnly = linesApi().showLastChecked(prefs.lastUploadAt, prefs.lastCheckedAt);
+  const parts = linesApi().partitionUploadLines(prefs.lastSentLines);
+  $("last-status").textContent = linesApi().formatStatus({
+    raw: prefs.lastStatus,
+    checkedOnly,
+    acceptedCount: prefs.lastSentLines ? parts.accepted.length : undefined,
+    refusedCount: parts.refused.length,
+  });
   $("addon-ver").textContent = prefs.lastAddonVersion || "—";
-  const what = humanizeLines(prefs.lastSentLines);
-  if (what) {
-    $("what-sent-body").textContent = what;
-    $("what-sent").hidden = false;
+  const items = linesApi().sentList(prefs.lastSentLines, prefs.lastSentCounts);
+  const heading = linesApi().sentHeading({ checkedOnly });
+  renderSentList(heading && items.length ? heading : null, items);
+  if (parts.refused.length && !checkedOnly) {
+    const note = linesApi().refusalMessage(parts.refused);
+    showErr("upload-err", "upload-err-msg", note.message, note.title);
   } else {
-    $("what-sent").hidden = true;
+    clearErr("upload-err");
   }
 }
 
@@ -183,7 +175,7 @@ function setAddonUi(state, check) {
   addonUiState = state;
   lastAddonCheck = check || lastAddonCheck;
   const c = lastAddonCheck;
-  $("addon-err").hidden = state !== "failed";
+  $("addon-err").hidden = state !== "failed" && state !== "check-failed";
   if (c) {
     $("addon-installed").textContent = c.installed || "not installed";
     $("addon-latest").textContent = c.latest || "—";
@@ -192,6 +184,7 @@ function setAddonUi(state, check) {
   }
   let text = "Checking the addon…";
   if (state === "updating") text = "Updating the addon…";
+  else if (state === "check-failed") text = "Couldn't check for an addon update.";
   else if (state === "failed") text = "The addon update did not finish.";
   else if (c?.gameRunning && c?.updateAvailable) text = "Game is running. The addon update will wait until it closes.";
   else if (c?.latest) text = "Up to date.";
@@ -219,8 +212,9 @@ function maybeMain() {
       else if (c.updateAvailable) setAddonUi("updating", c);
       else setAddonUi("uptodate", c);
     }).catch((e) => {
-      setAddonUi("failed", lastAddonCheck);
-      showErr("addon-err", "addon-err-msg", e);
+      // The reason from the app (site and GitHub answers), not a generic line.
+      setAddonUi("check-failed", lastAddonCheck);
+      showErr("addon-err", "addon-err-msg", e, "Addon check failed");
     });
     invoke("check_self_update").then(applyAppOffer).catch(() => applyAppOffer(null));
     invoke("game_running").then((g) => {
@@ -427,23 +421,23 @@ function showUploadSuccess(r) {
   if (r.requested === false) {
     // Nothing was sent: "Last upload" keeps the time of the last real upload.
     setLastChecked(lastUploadAt, r.at);
-    if ($("last-status").textContent === "Waiting for SavedVariables") $("last-status").textContent = "Nothing new";
+    $("last-status").textContent = linesApi().formatStatus({ checkedOnly: true });
+    const items = linesApi().sentList(lastSentLines, lastSentCounts);
+    renderSentList(items.length ? "Last sent" : null, items);
     return;
   }
   lastUploadAt = r.at || lastUploadAt;
-  $("last-upload").textContent = formatUploadTime(r.at);
+  lastSentLines = r.lines || lastSentLines;
+  lastSentCounts = r.counts || lastSentCounts;
+  $("last-upload").textContent = linesApi().formatUploadTime(r.at);
   setLastChecked(r.at, null);
   const parts = linesApi().partitionUploadLines(r.lines);
-  $("last-status").textContent = formatStatus(r.status, parts.accepted.length);
-  const what = humanizeLines(parts.accepted);
-  if (what) {
-    $("what-sent-body").textContent = what;
-    $("what-sent").hidden = false;
-  }
-  if (parts.accepted.length) {
-    $("upload-ok").textContent = `Sent ${parts.accepted.length}.`;
-    $("upload-ok").hidden = false;
-  }
+  $("last-status").textContent = linesApi().formatStatus({
+    acceptedCount: parts.accepted.length,
+    refusedCount: parts.refused.length,
+  });
+  const items = linesApi().sentList(r.lines, r.counts);
+  renderSentList(items.length ? "What was sent" : null, items);
   if (parts.refused.length) {
     const note = linesApi().refusalMessage(parts.refused);
     showErr("upload-err", "upload-err-msg", note.message, note.title);
@@ -452,7 +446,9 @@ function showUploadSuccess(r) {
 
 function showUploadFailure(message) {
   const msg = String(message || "");
-  showErr("upload-err", "upload-err-msg", msg, "Upload failed");
+  showErr("upload-err", "upload-err-msg", linesApi().uploadFailureMessage(msg), "Upload failed");
+  $("last-status").textContent = "Couldn't send";
+  renderSentList(null, []);
   if (linesApi().uploadFailureDropsToken(msg)) {
     hasToken = false;
     applyToken({ hasToken: false, state: "absent" });
@@ -489,24 +485,31 @@ $("btn-app-update").addEventListener("click", async () => {
 listen("addon-auto", (event) => {
   const r = event?.payload;
   if (!r) return;
-  setAddonUi(r.ok ? "uptodate" : "failed", {
+  const checkFailed = !r.ok && r.phase === "check";
+  setAddonUi(r.ok ? "uptodate" : checkFailed ? "check-failed" : "failed", {
     installed: r.installed,
     latest: r.latest,
     updateAvailable: false,
     gameRunning: !!r.gameRunning,
   });
-  if (r.message) {
+  if (r.ok && r.message) {
     $("addon-state").textContent = r.message;
     $("addon-state").hidden = false;
   }
-  if (!r.ok) showErr("addon-err", "addon-err-msg", r.message, "Update failed");
+  // The state line says what failed; the error line carries the real reason.
+  if (!r.ok) showErr("addon-err", "addon-err-msg", r.message || "No reason was given.", checkFailed ? "Addon check failed" : "Update failed");
   else clearErr("addon-err");
+});
+listen("upload-started", () => {
+  clearErr("upload-err");
+  $("last-status").textContent = "Sending…";
+  const items = linesApi().sentList(lastSentLines, lastSentCounts);
+  renderSentList(items.length ? "Last sent" : null, items);
 });
 listen("sv-changed", (event) => {
   const r = event?.payload;
   if (!r || typeof r !== "object" || !("ok" in r)) return;
   clearErr("upload-err");
-  $("upload-ok").hidden = true;
   if (!r.ok) showUploadFailure(r.error);
   else showUploadSuccess(r);
 });
@@ -584,6 +587,53 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
     mock._latest = "0.1.2";
     mock._forceUpdate = false;
   }
+  const copy = q.get("copy");
+  if (copy) {
+    mock.hasToken = true;
+    mock.tokenState = "present";
+    mock.folder = os === "mac" ? macChoices[0] : winFolder;
+    mock.prefs.gameFolder = mock.folder;
+    mock.prefs.setupDone = true;
+    mock.prefs.startAtLogin = true;
+    mock.prefs.lastAddonVersion = "0.2.1";
+    mock.addonInstalled = "0.2.1";
+    mock._latest = "0.2.1";
+    mock._forceUpdate = false;
+    const late = "1794356280";
+    const early = "1794348240";
+    const allLines = ["ranks accepted", "gbank accepted", "recipes accepted"];
+    const allCounts = [{ ty: "ranks", n: 5 }, { ty: "gbank", n: 214 }, { ty: "recipes", n: 93 }];
+    if (copy === "never" || copy === "never-uploaded") {
+      mock.prefs.lastUploadAt = null;
+      mock.prefs.lastCheckedAt = null;
+      mock.prefs.lastStatus = null;
+      mock.prefs.lastSentLines = null;
+      mock.prefs.lastSentCounts = null;
+    } else {
+      mock.prefs.lastUploadAt = (copy === "success-a" || copy === "success-a-ranks" || copy === "partial") ? late : early;
+      mock.prefs.lastStatus = "sent 3";
+      mock.prefs.lastSentLines = allLines;
+      mock.prefs.lastSentCounts = allCounts;
+      if (copy === "success-a-ranks") {
+        mock.prefs.lastStatus = "sent 1";
+        mock.prefs.lastSentLines = ["ranks accepted"];
+        mock.prefs.lastSentCounts = [{ ty: "ranks", n: 5 }];
+      }
+      if (copy === "partial") {
+        mock.prefs.lastStatus = "sent 2";
+        mock.prefs.lastSentLines = [
+          "gbank accepted",
+          "recipes accepted",
+          "ranks Rank names need a Guild Master or officer character linked",
+        ];
+        mock.prefs.lastSentCounts = [{ ty: "gbank", n: 214 }, { ty: "recipes", n: 93 }];
+      }
+      if (copy === "nothing-new") {
+        mock.prefs.lastCheckedAt = late;
+        mock.prefs.lastUploadAt = early;
+      }
+    }
+  }
 
   window.__TAURI__ = {
     core: {
@@ -645,7 +695,7 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
             : "D:\\Program Files\\World of Warcraft\\_forever_";
         }
         if (cmd === "upload_now") {
-          if (screen === "offline") throw "couldn't reach the site: offline";
+          if (screen === "offline") throw "couldn't reach the site: example.invalid: Connection Failed: Connect error: connection refused";
           const secs = Math.floor(Date.now() / 1000);
           mock.prefs.lastUploadAt = String(secs);
           mock.prefs.lastStatus = "sent 2";
@@ -653,7 +703,7 @@ if (!window.__TAURI__ && !window.__TAURI_INTERNALS__) {
           return { found: 1, sent: 1, lines: mock.prefs.lastSentLines, at: mock.prefs.lastUploadAt, status: "sent 2" };
         }
         if (cmd === "check_addon") {
-          if (screen === "offline") throw "couldn't reach GitHub: offline";
+          if (screen === "offline") throw "couldn't reach example.invalid: Connection Failed: tls connection init failed: invalid peer certificate: UnknownIssuer; GitHub: couldn't reach api.github.com: Connection Failed: tls connection init failed: invalid peer certificate: UnknownIssuer";
           const installed = mock.addonInstalled || "0.1.1";
           const latest = mock._latest || "0.1.2";
           return {
@@ -775,7 +825,25 @@ bootPromise.catch((e) => {
 
 if (window.__PREVIEW__) {
   const previewScreen = new URLSearchParams(location.search).get("screen");
-  bootPromise.then(() => {
+  bootPromise.then(async () => {
+    const copy = new URLSearchParams(location.search).get("copy");
+    if (copy) {
+      for (let i = 0; i < 50 && $("screen-main").classList.contains("hidden"); i += 1) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      for (let i = 0; i < 50 && $("addon-state").hidden; i += 1) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      if (copy === "error") {
+        showUploadFailure("couldn't reach the site: example.invalid: Connection Failed");
+      } else if (copy === "uploading") {
+        $("last-status").textContent = "Sending…";
+        const items = linesApi().sentList(lastSentLines, lastSentCounts);
+        renderSentList(items.length ? "Last sent" : null, items);
+      }
+      document.documentElement.dataset.copyReady = "1";
+      return;
+    }
     if (previewScreen === "waiting") {
       setTimeout(() => beginWait(), 400);
     } else if (["denied", "expired", "cancelled", "offline", "retry", "recovery"].includes(previewScreen)) {

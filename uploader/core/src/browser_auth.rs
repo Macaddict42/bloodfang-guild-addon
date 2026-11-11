@@ -134,12 +134,7 @@ pub fn site_host(url: &str) -> String {
 }
 
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(5))
-        .timeout_read(Duration::from_secs(10))
-        .timeout(Duration::from_secs(15))
-        .redirects(0)
-        .build()
+    crate::http::agent(Duration::from_secs(5), Duration::from_secs(10), Duration::from_secs(15), Some(0))
 }
 
 fn random_bytes(n: usize) -> Result<Vec<u8>, AuthError> {
@@ -238,8 +233,14 @@ fn preflight(site: &str) -> Result<(), AuthError> {
                 _ => Err(AuthError::NotDeployed),
             }
         }
-        Err(ureq::Error::Status(_, _)) => Err(AuthError::NotDeployed),
-        Err(_) => Err(AuthError::Network),
+        Err(ureq::Error::Status(code, _)) => {
+            crate::log::error("sign-in", &format!("authorize preflight answered HTTP {code}"));
+            Err(AuthError::NotDeployed)
+        }
+        Err(ureq::Error::Transport(t)) => {
+            crate::log::error("sign-in", &format!("couldn't reach the site: {}", crate::http::error_chain(&t)));
+            Err(AuthError::Network)
+        }
     }
 }
 
@@ -432,11 +433,19 @@ fn exchange(site: &str, code: &str, redirect_uri: &str, verifier: &str, state: &
             }
             Ok(parsed.token)
         }
-        Err(ureq::Error::Status(403, _)) => Err(AuthError::Forbidden),
-        Err(ureq::Error::Status(400, _)) => Err(AuthError::InvalidGrant),
-        Err(ureq::Error::Status(404, _)) => Err(AuthError::NotDeployed),
-        Err(ureq::Error::Status(_, _)) => Err(AuthError::BadResponse),
-        Err(_) => Err(AuthError::Network),
+        Err(ureq::Error::Status(code, _)) => {
+            crate::log::error("sign-in", &format!("token exchange answered HTTP {code}"));
+            Err(match code {
+                403 => AuthError::Forbidden,
+                400 => AuthError::InvalidGrant,
+                404 => AuthError::NotDeployed,
+                _ => AuthError::BadResponse,
+            })
+        }
+        Err(ureq::Error::Transport(t)) => {
+            crate::log::error("sign-in", &format!("token exchange couldn't reach the site: {}", crate::http::error_chain(&t)));
+            Err(AuthError::Network)
+        }
     }
 }
 
