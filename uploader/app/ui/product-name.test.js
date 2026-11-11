@@ -17,7 +17,7 @@ assert.strictEqual(conf.productName, "Bloodfang Uploader");
 assert.strictEqual(conf.mainBinaryName, "Bloodfang Uploader");
 assert.strictEqual(conf.bundle.publisher, "Bloodfang Guild");
 assert.strictEqual(conf.bundle.windows.webviewInstallMode.type, "skip");
-const cargo = fs.readFileSync(path.join(__dirname, "../src-tauri/Cargo.toml"), "utf8");
+const cargo = fs.readFileSync(path.join(__dirname, "../src-tauri/Cargo.toml"), "utf8").replace(/\r\n/g, "\n"); // Windows checkouts may use CRLF
 assert.match(cargo, /\[\[bin\]\]\nname = "updater"\npath = "src\/bin\/updater.rs"/);
 assert.ok(!cargo.includes("guild-uploader-verify-update"));
 assert.ok(!fs.readFileSync(path.join(__dirname, "styles.css"), "utf8").includes("Retik"));
