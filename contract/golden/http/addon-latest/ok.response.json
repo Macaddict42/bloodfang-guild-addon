@@ -1,0 +1,16 @@
+{
+  "status": 200,
+  "body": {
+    "version": "0.2.1",
+    "tag": "addon-v0.2.1",
+    "publishedAt": "2026-11-09T18:00:00.000Z",
+    "assets": [
+      {
+        "name": "Guildaddon-0.2.1.zip",
+        "sizeBytes": 48213,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "url": "https://github.com/example/guild-addon/releases/download/addon-v0.2.1/Guildaddon-0.2.1.zip"
+      }
+    ]
+  }
+}

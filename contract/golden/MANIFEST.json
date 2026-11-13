@@ -1,0 +1,81 @@
+{
+  "exportVersions": {
+    "gbank": [
+      1
+    ],
+    "link": [
+      1
+    ],
+    "ranks": [
+      1
+    ],
+    "recipes": [
+      1
+    ]
+  },
+  "uploaderProtocol": 1,
+  "generators": {
+    "strings/": "python tests/run.py --write-golden",
+    "http/*.request.json": "WRITE_GOLDEN=1 cargo test -p guild-uploader-core golden",
+    "http/*.response.json": "written by hand from contract/SPEC.md section 4.2; checked by the site"
+  },
+  "pending": [
+    "link-ok, signup, attendance, kills, signups strings: produced or read only by the site; added by a site PR",
+    "oauth-* http pairs: A5",
+    "stale and bad-envelope strings: need the site's rules"
+  ],
+  "files": {
+    "http/addon-latest/not-published.request.json": "20a13df8466e51929bd2f642f284b40e68fa155db031c7c8e063a0e3ffb686fb",
+    "http/addon-latest/not-published.response.json": "97cfff46952d3fec79055bf829bec6a4f447c016ed8ef5683729cb2e88500354",
+    "http/addon-latest/ok.request.json": "20a13df8466e51929bd2f642f284b40e68fa155db031c7c8e063a0e3ffb686fb",
+    "http/addon-latest/ok.response.json": "f98d917b1a856bbfd7d99a1c2e037283c4485ef8f96205d87e6abefc21bde3b3",
+    "http/ingest/bad-request.request.json": "0a6c36541372e3c8cdaee27afd2397787a8aaaf7c134bae94ae74ccc07194903",
+    "http/ingest/bad-request.response.json": "e0334b88c2fe8b673df429c04f5af8d9ae101ff1d3f93b4f6667197833fe9122",
+    "http/ingest/bad-token.request.json": "0a6c36541372e3c8cdaee27afd2397787a8aaaf7c134bae94ae74ccc07194903",
+    "http/ingest/bad-token.response.json": "1d853f6eb3e857ad1a86c0864be916109c375a7dd09c58bc1ab4942711fc874e",
+    "http/ingest/ok-mixed-results.request.json": "0a6c36541372e3c8cdaee27afd2397787a8aaaf7c134bae94ae74ccc07194903",
+    "http/ingest/ok-mixed-results.response.json": "c21d4c14626cf265c309bdfa99f8eba7f8ce4ae79633070d04acfe5f2191a64a",
+    "http/ingest/rate-limited.request.json": "0a6c36541372e3c8cdaee27afd2397787a8aaaf7c134bae94ae74ccc07194903",
+    "http/ingest/rate-limited.response.json": "0c8ef2327b0cf8b64dda48f6ca647ce1acf3a65cae7f95d14a9c4684479b5db9",
+    "http/ingest/too-large.request.json": "0a6c36541372e3c8cdaee27afd2397787a8aaaf7c134bae94ae74ccc07194903",
+    "http/ingest/too-large.response.json": "71c877923655847410390348b4a55c769a6fd6128ce759ab927c568966f2afaf",
+    "http/logs/bad-error-code.request.json": "42e57e57ebdaea6d9e16d28ebee14fdcc317372ebf662774219e8a653d27af2f",
+    "http/logs/bad-error-code.response.json": "6d0ea8e8d5f87cb8d2ac115918908094ea045877d9ea3f98f5d59f0d47439d7f",
+    "http/logs/rate-limited.request.json": "42e57e57ebdaea6d9e16d28ebee14fdcc317372ebf662774219e8a653d27af2f",
+    "http/logs/rate-limited.response.json": "0c8ef2327b0cf8b64dda48f6ca647ce1acf3a65cae7f95d14a9c4684479b5db9",
+    "http/logs/stored-anonymous.request.json": "848c5897cd4d92c58773e4ff4ba632bd41a30202b2a7c8e03632c47e237b3674",
+    "http/logs/stored-anonymous.response.json": "f1c643bacc80af4605c7cb39fdbcdb151c9534a098537a0241edac9dbccbb72c",
+    "http/logs/stored-token.request.json": "42e57e57ebdaea6d9e16d28ebee14fdcc317372ebf662774219e8a653d27af2f",
+    "http/logs/stored-token.response.json": "f1c643bacc80af4605c7cb39fdbcdb151c9534a098537a0241edac9dbccbb72c",
+    "http/ranks/bad-ranks.request.json": "15030e90012c2e2c5351be587c81b891d02254b06f41b35cb324528061eed877",
+    "http/ranks/bad-ranks.response.json": "03c4f8eeb8bcd0653a5a69f71b2d23d8aaf2db6ac65cbdc289db5ab7c65b8b56",
+    "http/ranks/bad-token.request.json": "15030e90012c2e2c5351be587c81b891d02254b06f41b35cb324528061eed877",
+    "http/ranks/bad-token.response.json": "1d853f6eb3e857ad1a86c0864be916109c375a7dd09c58bc1ab4942711fc874e",
+    "http/ranks/not-officer.request.json": "15030e90012c2e2c5351be587c81b891d02254b06f41b35cb324528061eed877",
+    "http/ranks/not-officer.response.json": "1f02ecfd4e563757c428ce9ea425f53835ac2d3f5e96d156450bb71e1e73a0b5",
+    "http/ranks/older.request.json": "15030e90012c2e2c5351be587c81b891d02254b06f41b35cb324528061eed877",
+    "http/ranks/older.response.json": "dfc9a51d55e6189f50a6127f35df7f80c4d75d0816eafb1157482f61de1d3022",
+    "http/ranks/rate-limited.request.json": "15030e90012c2e2c5351be587c81b891d02254b06f41b35cb324528061eed877",
+    "http/ranks/rate-limited.response.json": "0c8ef2327b0cf8b64dda48f6ca647ce1acf3a65cae7f95d14a9c4684479b5db9",
+    "http/ranks/stored.request.json": "15030e90012c2e2c5351be587c81b891d02254b06f41b35cb324528061eed877",
+    "http/ranks/stored.response.json": "1c79643d06eab136f4c63806eecbe66b91a990e51800b147b26e9b644b921904",
+    "strings/bad/bad-prefix.txt": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+    "strings/bad/bad-sig.txt": "29b636c9c4f9271009e62c94ea9f1ab1c7add88a5319a7b390bca2537a762099",
+    "strings/bad/decode-failed.txt": "0009bb16c63fbdb850ac25e2b477d9c8c3f50fa91942cb1f96b2674ad22436f4",
+    "strings/bad/expected.json": "3329854d4ff65aaf3735249b18f0a3bc051bbdd567b393edca698e3a597a779f",
+    "strings/bad/unknown-type.txt": "20d3a73fb7de259389831966e789f37767ce9e71963cb47ec1828cf016f23693",
+    "strings/bad/unsupported-version.txt": "4297b8233220e1efa9736261ed07a1eda42430662c70c526495da5a686eeea9a",
+    "strings/canonical.v1.json": "f703424e2144dfffb4ce0f920201e2c74d836f476d69de76b5a33fedf5b1e35e",
+    "strings/gbank.no-guild.v1.json": "c28c016a3d6882abc397d576daa1c4758894a7b438325aa3d1a902968f202aad",
+    "strings/gbank.no-guild.v1.txt": "ab914225a45c1c03a6ede3cb0015ab8ba234be597383c76e170b1abb89c38d5e",
+    "strings/gbank.v1.json": "29d97138bddb9cefd2831ed1b755daf638fed0dff831eb7b22534b91d4e5a5a7",
+    "strings/gbank.v1.txt": "4384deb7d6304b6d40d91a93794623933935b698d5136139bea2164ee7549cce",
+    "strings/link.v1.json": "d548fa693f0d1e41000b13a4590d4875f76b382271a526a6b37f52d9f8144c74",
+    "strings/link.v1.txt": "5239edb67f0aa5a941a630debe36f9b8f034261a33a8f2f30be00d214b3fedb1",
+    "strings/ranks.v1.json": "7d1a34804229a732ae349bd30d1c8cde76a0b03de92ae6835149f0d0592856cc",
+    "strings/ranks.v1.txt": "0ca627147fabaa9be2dc7e1bfa20b6ec87dcbb89fe40bc723199a12e72f87825",
+    "strings/recipes.v1.json": "eb78359fe4220f4d1277be21b0418adff8749a3af0e5b0c002877723849f78e1",
+    "strings/recipes.v1.txt": "67e3b2a4f08eebdb81be75eb70b32c149f52858f9d27b0b9322780934a4d3b3b",
+    "strings/secret.v1.hex": "88095ece32a68a2c42cce91e501e931f5eeba2820b959cb8da99abe1700c4150"
+  }
+}

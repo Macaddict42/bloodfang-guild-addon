@@ -1,0 +1,12 @@
+{
+  "auth": "Bearer <uploader token>",
+  "body": {
+    "strings": [
+      "!BF:gbank:v1:Db5woToqmy4TsKFoGMBjzsERaLJq6ubc13O9H5ItjICtjPshuvwaSuyD0ngZm9csNNgp2F()32haL121cfa5w6TeigmVRgGIdWU9vwx6xQvFId3i45j3qwC39pS8rQJQv1GUQRXXPqdXWaQQBoN6u8CSxKARxTZ8l)NQPVgJ(tiVRjv7hJqXBqir0k14e6f75YYkti6vvLn6VOYtFgcB0HsRhQu1U3f1tW2yyckOz5CjpvsioVdJFM0GcoIkktik56mgLOysTmxkymwQR9E)8z667DIwqzCrsAMtnL2pyhGQjS5uKPBFRZewItBJ)MrjSSmACa5jNB(FZXxbPx5OCHq8lx4782RxXvQPXIOnq3aUbGG3oiVsxm)x2JF1F8BC8cfBERBvhR25kPfULxsmwronnrYTyUwWmLebsljmsULltrDPuBycQ2WTPecsrBo3QsYkH))g(Zp",
+      "!BF:recipes:v1:vb1YonmmqWFLQ9CALF144CRafUaceQ3qCyD86wR60gLeKOQI)DSn9cYh8QzNz2z3Ra6CNpbTaBfFfdQGUd4i0Ef2)vWLGFlIxOXLkPz9s2M7U)HTpYtSoH9uQ7oAAUiOcgjm2Fd6V6FQYMeDz3UXF73y)qKw8ubpjcpDCcA)akalEbNMPSzV69HUs17yWT4zcZSVrI6TLw7gdym9VjodFwbZqlxBKnY6ggln7s8Dob1Wu(gL1Iw9ALXGsJZ6zCETGlsYhY5By8SNMMcLtXMy3bQ)szP6cduoHsUMvX18gDAuthdXi0klZzkSpPHl9kRp9mgFhtxRfkrhPmEjt0WCgRCT0y0gHY7LcwTQMjqdXKnehrB(M()f43p",
+      "!BF:ranks:v1:D5yppnmmqy4)kr3CA15yhNp2kqHfqGqDdXWLZNlwKKwLKkbQI)74eYet(07hpV(kqo3PEOgWTQTiKc8h0auFfoEj4IYV0sFldBm6Q8n4UBU9U93RIP6Poj6EqgNwkKcdc12Tk939pPWcc05TwxJX0GCbYLkmtRiNiwSixNrXYNNxCL5(VOUZTsYdxcTUzWu)NJq9BWIqYt04Kmp4ZEFGxUELcUKhfAo9AiPRzX6WqGAJV7ANG3tHjOwvuPl12seJ)VXWX4IzeJS3L70knYMm2JuLZQBAquk8fKIjXWuoYuMrvHnOsrzSPQmxr2s4)G)9"
+    ]
+  },
+  "method": "POST",
+  "path": "/api/uploader/ingest"
+}

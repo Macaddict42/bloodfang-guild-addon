@@ -1,4 +1,4 @@
--- Crafting recipe export (SPEC §12, export-format.md `recipes`): when a profession window opens, the
+-- Crafting recipe export (SPEC §12, contract/SPEC.md `recipes`): when a profession window opens, the
 -- spell IDs this character knows for it. Enchanting uses the craft window in Classic clients.
 local _, ns = ...
 local KNOWN = { Alchemy = true, Blacksmithing = true, Cooking = true, Enchanting = true, Engineering = true, ["First Aid"] = true, Leatherworking = true, Tailoring = true }

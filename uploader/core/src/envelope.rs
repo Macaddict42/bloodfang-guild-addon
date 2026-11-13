@@ -1,5 +1,5 @@
 //! Counts for the upload panel, read from an accepted `!BF:` envelope.
-//! The body is LibDeflate EncodeForPrint of raw deflate JSON (export-format.md).
+//! The body is LibDeflate EncodeForPrint of raw deflate JSON (contract/SPEC.md).
 
 use flate2::read::DeflateDecoder;
 use serde_json::Value;

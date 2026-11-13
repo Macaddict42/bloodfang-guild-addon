@@ -1,0 +1,31 @@
+{
+  "addon": "0.1.0",
+  "char": {
+    "guid": "Player-4395-0ABCDEF1",
+    "name": "Testchar",
+    "realm": "Testrealm"
+  },
+  "guild": {
+    "name": "Example Guild",
+    "ranks": [
+      "Guild Master",
+      "Officer",
+      "Raid Lead",
+      "Guild Member",
+      "Trial",
+      "Alt"
+    ],
+    "t": 1793836800
+  },
+  "id": "dd2e804f84bbab75499a39dbf0116212",
+  "p": {
+    "profession": "Alchemy",
+    "recipes": [
+      3170,
+      17187
+    ],
+    "skill": 300
+  },
+  "sig": "13f4bfbfb99fc0767242ce49f30280d9b353997924ff32064602a9e038e1aab1",
+  "t": 1793836800
+}
