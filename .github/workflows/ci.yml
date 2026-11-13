@@ -23,6 +23,7 @@ jobs:
       ui: ${{ github.event_name != 'pull_request' || steps.f.outputs.ui == 'true' }}
       app: ${{ github.event_name != 'pull_request' || steps.f.outputs.app == 'true' }}
       native: ${{ steps.f.outputs.native == 'true' || contains(github.event.pull_request.labels.*.name, 'native-build') }}
+      contract: ${{ steps.f.outputs.contract == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -35,6 +36,7 @@ jobs:
             ui: ['uploader/app/ui/**', 'contract/golden/uploader/**', '.github/workflows/ci.yml']
             app: ['uploader/app/src-tauri/**', 'uploader/Cargo.*', 'uploader/core/**', '.github/workflows/ci.yml']
             native: ['uploader/app/**', 'uploader/core/**', 'uploader/Cargo.*', '.github/workflows/uploader-app-build.yml']
+            contract: ['contract/**', 'tests/golden-add-only.sh']
 
   branding:
     runs-on: ubuntu-24.04
@@ -90,6 +92,19 @@ jobs:
         with: { workspaces: "uploader -> target", key: app }
       - run: cargo test -p guild-uploader-app --locked
 
+  contract:
+    needs: changes
+    if: needs.changes.outputs.contract == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Golden files are add-only (contract/SPEC.md 5.2)
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          GOLDEN_BREAK: ${{ contains(github.event.pull_request.labels.*.name, 'golden-break') && '1' || '' }}
+        run: sh tests/golden-add-only.sh "$BASE"
+
   native:
     needs: changes
     if: needs.changes.outputs.native == 'true'
@@ -97,7 +112,7 @@ jobs:
 
   ci-ok:
     if: always()
-    needs: [changes, branding, addon, core, ui, app, native]
+    needs: [changes, branding, addon, core, ui, app, contract, native]
     runs-on: ubuntu-24.04
     steps:
       - name: All checks passed or were skipped

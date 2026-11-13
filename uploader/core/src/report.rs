@@ -92,6 +92,11 @@ pub enum SendOutcome {
     Refused(u16),
 }
 
+/// Map a `/api/uploader/logs` status: any 2xx is stored; anything else is a final refusal (never retried).
+pub fn log_outcome(status: u16) -> SendOutcome {
+    if (200..300).contains(&status) { SendOutcome::Stored } else { SendOutcome::Refused(status) }
+}
+
 /// POST the report. `token` is the uploader token when signed in.
 pub fn send(site: &str, token: Option<&str>, report: &LogReport) -> Result<SendOutcome, String> {
     let url = format!("{}/api/uploader/logs", site.trim_end_matches('/'));
@@ -100,8 +105,8 @@ pub fn send(site: &str, token: Option<&str>, report: &LogReport) -> Result<SendO
         req = req.set("Authorization", &format!("Bearer {t}"));
     }
     match req.send_json(report) {
-        Ok(_) => Ok(SendOutcome::Stored),
-        Err(ureq::Error::Status(code, _)) => Ok(SendOutcome::Refused(code)),
+        Ok(r) => Ok(log_outcome(r.status())),
+        Err(ureq::Error::Status(code, _)) => Ok(log_outcome(code)),
         Err(e) => Err(crate::http::describe(e)),
     }
 }

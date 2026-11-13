@@ -422,12 +422,15 @@ pub fn interpret_ranks(status: u16, body: &str) -> RanksOutcome {
 }
 
 /// `POST {site}/api/uploader/ranks` with `{guild, t, ranks}` and the Bearer uploader token.
+/// Body of `POST /api/uploader/ranks` (contract/SPEC.md 4.2).
+pub fn ranks_body(g: &GuildRanks) -> serde_json::Value { serde_json::json!({ "guild": g.guild, "t": g.t, "ranks": g.ranks }) }
+
 pub fn post_ranks(site: &str, token: &str, g: &GuildRanks) -> RanksOutcome {
     let url = format!("{}/api/uploader/ranks", site.trim_end_matches('/'));
     let res = crate::http::site_agent()
         .post(&url)
         .set("Authorization", &format!("Bearer {token}"))
-        .send_json(serde_json::json!({ "guild": g.guild, "t": g.t, "ranks": g.ranks }));
+        .send_json(ranks_body(g));
     let out = match res {
         Ok(r) => interpret_ranks(200, &r.into_string().unwrap_or_default()),
         Err(ureq::Error::Status(code, r)) => interpret_ranks(code, &r.into_string().unwrap_or_default()),

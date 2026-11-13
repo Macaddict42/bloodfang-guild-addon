@@ -1,4 +1,6 @@
-# Loads the addon under Lua 5.1 and LuaJIT with game API stubs, produces export strings, writes them for verify.mjs.
+# Loads the addon under Lua 5.1 and LuaJIT with game API stubs and checks its export strings.
+# Then compares what it produces with contract/golden/strings (see contract/golden/README.md).
+# `python tests/run.py --write-golden` writes those files instead of comparing (for a NEW version only).
 import sys, json, lupa.lua51 as L51, lupa.luajit21 as LJ
 root = __import__("os").path.dirname(__file__) + "/../addon/"
 import os
@@ -8,6 +10,17 @@ STUBS = r'''
 local t0 = E2E_T0
 GetServerTime = function() return t0 end
 GetTime = function() return 12.5 end
+-- Deterministic math.random (Park-Miller; products stay exact in doubles on Lua 5.1 and LuaJIT), so export ids
+-- are the same on both runtimes. E2E_SEED resets the sequence before the golden strings are made.
+local seed = 1
+function E2E_SEED(n) seed = n end
+math.random = function(a, b)
+  seed = (seed * 16807) % 2147483647
+  if a == nil then return seed / 2147483647 end
+  if b == nil then a, b = 1, a end
+  return a + seed % (b - a + 1)
+end
+math.randomseed = function() end
 time = GetServerTime
 UnitGUID = function() return E2E_GUID end
 UnitFullName = function() return "Testchar", "Testrealm" end
@@ -94,10 +107,19 @@ for label, mk, shim in [("luajit", LJ.LuaRuntime, False), ("lua51", L51.LuaRunti
     assert list(sched) == [2, 1, True], (label, list(sched))
     out[label] = {"sha": h[0], "hmac": h[1], "gbank": gb, "recipes": rc, "ranks": rk, "roundtrip": list(rt)}
     print(label, h[0][:16], h[1][:16], len(gb), list(rt))
-json.dump({"secret": SECRET, "runs": out}, open("/tmp/addon-out.json", "w"))
 for k, r in out.items():
     assert r["sha"] == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", k
     assert r["hmac"] == "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7", k
     assert r["roundtrip"] == ["gbank", 1, 25], k
     assert r["gbank"].startswith("!BF:gbank:v1:") and r["recipes"].startswith("!BF:recipes:v1:"), k
 print("all addon tests passed")
+
+# ---------- golden fixtures (contract/golden/strings) ----------
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import golden
+made = {}
+for label, mk, shim in [("lua51", L51.LuaRuntime, True), ("luajit", LJ.LuaRuntime, False)]:
+    lua = mk()
+    ns = load(lua, shim)
+    made[label] = golden.make(lua, ns)
+sys.exit(golden.check_or_write(made, SECRET, write="--write-golden" in sys.argv))

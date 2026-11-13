@@ -150,12 +150,15 @@ fn redact_uploader_token(body: &str) -> String {
     out.chars().take(200).collect()
 }
 
+/// Body of `POST /api/uploader/ingest` (contract/SPEC.md 4.2).
+pub fn ingest_body(strings: &[String]) -> serde_json::Value { serde_json::json!({ "strings": strings }) }
+
 pub fn post(site: &str, token: &str, strings: &[String]) -> Result<Vec<Outcome>, UploadError> {
     let url = format!("{}/api/uploader/ingest", site.trim_end_matches('/'));
     let res = http::site_agent()
         .post(&url)
         .set("Authorization", &format!("Bearer {token}"))
-        .send_json(serde_json::json!({ "strings": strings }));
+        .send_json(ingest_body(strings));
     let out = match res {
         Ok(r) => interpret_ingest(200, &r.into_string().unwrap_or_default()),
         Err(ureq::Error::Status(code, r)) => interpret_ingest(code, &r.into_string().unwrap_or_default()),
@@ -404,3 +407,6 @@ mod tests {
         assert!(State::load(&p).sent.contains("a")); let _ = fs::remove_file(p);
     }
 }
+
+#[cfg(test)]
+mod golden;
