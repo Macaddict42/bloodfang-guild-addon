@@ -1,4 +1,4 @@
--- Export string codec (export-format.md v1): canonical JSON, SHA-256, HMAC-SHA256, LibDeflate print encoding.
+-- Export string codec (contract/SPEC.md v1): canonical JSON, SHA-256, HMAC-SHA256, LibDeflate print encoding.
 -- Plain Lua 5.1 with the game's `bit` library. No game API calls here, so it runs in tests outside the game.
 local _, ns = ...
 local bit = ns.bit or bit

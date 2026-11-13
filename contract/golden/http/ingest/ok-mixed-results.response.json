@@ -1,0 +1,21 @@
+{
+  "status": 200,
+  "body": {
+    "results": [
+      {
+        "type": "gbank",
+        "ok": true
+      },
+      {
+        "type": "recipes",
+        "ok": false,
+        "error": "bad_sig"
+      },
+      {
+        "type": "ranks",
+        "ok": false,
+        "error": "duplicate"
+      }
+    ]
+  }
+}

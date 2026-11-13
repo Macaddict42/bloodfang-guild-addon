@@ -1,0 +1,13 @@
+{
+  "auth": "Bearer <uploader token>",
+  "body": {
+    "addonVersion": "0.2.1",
+    "appVersion": "0.1.4",
+    "errorCode": "upload",
+    "log": "2026-11-13T12:00:00Z INFO upload start\n",
+    "message": "couldn't reach the site",
+    "os": "windows x86_64"
+  },
+  "method": "POST",
+  "path": "/api/uploader/logs"
+}

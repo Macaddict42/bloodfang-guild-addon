@@ -1,0 +1,23 @@
+{
+  "addon": "0.1.0",
+  "char": {
+    "guid": "Player-4395-0ABCDEF1",
+    "name": "Testchar",
+    "realm": "Testrealm"
+  },
+  "id": "0df66db44b0c70c810231adee607532a",
+  "p": {
+    "name": "Example Guild",
+    "ranks": [
+      "Guild Master",
+      "Officer",
+      "Raid Lead",
+      "Guild Member",
+      "Trial",
+      "Alt"
+    ],
+    "t": 1793836800
+  },
+  "sig": "2ac0cfd5d3130c42cf0a9d63bb00e7f7a1cae4ca50ca24190b011a2c49851a68",
+  "t": 1793836800
+}

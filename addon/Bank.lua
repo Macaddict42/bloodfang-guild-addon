@@ -1,4 +1,4 @@
--- Guild bank capture (SPEC §13, export-format.md `gbank`): every viewable tab's item IDs and counts, each
+-- Guild bank capture (SPEC §13, contract/SPEC.md `gbank`): every viewable tab's item IDs and counts, each
 -- item's icon as the game reports it, and guild bank gold. Runs when the guild bank window opens.
 local _, ns = ...
 local MAX_TABS = 8

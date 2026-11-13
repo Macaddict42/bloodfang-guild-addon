@@ -1,4 +1,4 @@
--- In-game addon messages (export-format.md, Addon messages): VER/VREQ version checks and LOC location sharing.
+-- In-game addon messages (contract/SPEC.md, Addon messages): VER/VREQ version checks and LOC location sharing.
 local _, ns = ...
 local CT = C_ChatInfo
 local lastVer, vreqSent, warned, replyPending = 0, false, false, false

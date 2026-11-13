@@ -1,0 +1,17 @@
+{
+  "auth": "Bearer <uploader token>",
+  "body": {
+    "guild": "Example Guild",
+    "ranks": [
+      "Guild Master",
+      "Officer",
+      "Raid Lead",
+      "Guild Member",
+      "Trial",
+      "Alt"
+    ],
+    "t": 1793836800
+  },
+  "method": "POST",
+  "path": "/api/uploader/ranks"
+}

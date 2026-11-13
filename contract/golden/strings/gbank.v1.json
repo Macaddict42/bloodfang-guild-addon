@@ -1,0 +1,49 @@
+{
+  "addon": "0.1.0",
+  "char": {
+    "guid": "Player-4395-0ABCDEF1",
+    "name": "Testchar",
+    "realm": "Testrealm"
+  },
+  "guild": {
+    "name": "Example Guild",
+    "ranks": [
+      "Guild Master",
+      "Officer",
+      "Raid Lead",
+      "Guild Member",
+      "Trial",
+      "Alt"
+    ],
+    "t": 1793836800
+  },
+  "id": "78ce43eea1244f3b7210a28b89842226",
+  "p": {
+    "copper": 1234567,
+    "tabs": [
+      {
+        "items": [
+          {
+            "count": 25,
+            "icon": 102771,
+            "itemId": 2771
+          },
+          {
+            "count": 1,
+            "icon": 113444,
+            "itemId": 13444
+          }
+        ],
+        "name": "Mats: \"ore\"",
+        "tab": 1
+      },
+      {
+        "items": [],
+        "name": "Épées",
+        "tab": 2
+      }
+    ]
+  },
+  "sig": "b438380cd4916583de9b42cf04e1f0209d386ebf8bc241bc3d600e1ed93da57f",
+  "t": 1793836800
+}

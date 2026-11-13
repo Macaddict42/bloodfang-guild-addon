@@ -1,0 +1,37 @@
+{
+  "addon": "0.1.0",
+  "char": {
+    "guid": "Player-4395-0ABCDEF1",
+    "name": "Testchar",
+    "realm": "Testrealm"
+  },
+  "id": "9151a68a0a7678c7230fca8b98eda6e2",
+  "p": {
+    "copper": 1234567,
+    "tabs": [
+      {
+        "items": [
+          {
+            "count": 25,
+            "icon": 102771,
+            "itemId": 2771
+          },
+          {
+            "count": 1,
+            "icon": 113444,
+            "itemId": 13444
+          }
+        ],
+        "name": "Mats: \"ore\"",
+        "tab": 1
+      },
+      {
+        "items": [],
+        "name": "Épées",
+        "tab": 2
+      }
+    ]
+  },
+  "sig": "d8c7e79e67652fb2feecbe8d947ef3c12b2a4a11a9cb28115370fc1b23e9e1a8",
+  "t": 1793836800
+}

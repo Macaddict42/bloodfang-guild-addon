@@ -1,0 +1,5 @@
+{
+  "auth": "none",
+  "method": "GET",
+  "path": "/api/addon/latest"
+}

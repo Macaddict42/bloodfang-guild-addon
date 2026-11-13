@@ -1,0 +1,16 @@
+{
+  "input": {
+    "z": 1,
+    "n": -42,
+    "big": 9007199254740991,
+    "yes": true,
+    "no": false,
+    "s": [
+      "Épées",
+      "tab\tnew\nline",
+      "quote\"back\\slash",
+      "ctl\u0001"
+    ]
+  },
+  "canonical": "{\"big\":9007199254740991,\"n\":-42,\"no\":false,\"s\":[\"Épées\",\"tab\\tnew\\nline\",\"quote\\\"back\\\\slash\",\"ctl\\u0001\"],\"yes\":true,\"z\":1}"
+}

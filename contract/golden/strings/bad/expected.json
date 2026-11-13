@@ -1,0 +1,11 @@
+{
+  "bad-prefix.txt": "bad_prefix",
+  "bad-sig.txt": "bad_sig",
+  "decode-failed.txt": "decode_failed",
+  "too-large": {
+    "error": "too_large",
+    "rule": "'!BF:gbank:v1:' followed by 262144 'a' characters (longer than MAX_STRING)"
+  },
+  "unknown-type.txt": "unknown_type",
+  "unsupported-version.txt": "unsupported_version"
+}

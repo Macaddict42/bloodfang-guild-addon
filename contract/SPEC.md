@@ -302,7 +302,7 @@ The uploader remembers handled strings by SHA-256 of the full string (`uploader/
 
 ## 7. Golden fixtures (planned)
 
-Names only. Nothing is generated yet. Strings use a fixed test secret (`11` x 32), `Player-1234-0ABCDEF1`, "Testchar", "Example Guild", fixed `t`.
+Generated in task A2: see `contract/golden/README.md` for how, and `contract/golden/MANIFEST.json` for the inventory and the files still pending (site-produced types, OAuth pairs, `stale` and `bad-envelope`). Strings use a fixed test secret (`11` x 32), `Player-1234-0ABCDEF1`, "Testchar", "Example Guild", fixed `t`.
 
 Export strings (`contract/golden/strings/`), each a `.txt` (the string) plus `.json` (decoded envelope):
 
