@@ -3,19 +3,21 @@ on:
   push:
     tags: ["addon-v*"]
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 jobs:
+  checks:
+    uses: ./.github/workflows/addon-checks.yml
   build:
+    needs: checks
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
-      - name: Tests (Lua 5.1 and LuaJIT)
-        run: |
-          python3 -m venv /tmp/v && /tmp/v/bin/pip install -q lupa==2.4 pillow==11.0.0
-          /tmp/v/bin/python tests/run.py
-          PATH=/tmp/v/bin:$PATH sh tests/package-check.sh
+      - name: Build tools
+        run: python3 -m venv /tmp/v && /tmp/v/bin/pip install -q lupa==2.4 pillow==11.0.0
       - name: No branding
         env: { BRANDING_WORDS: "${{ secrets.BRANDING_WORDS }}" }
         run: scripts/check-no-branding.sh
