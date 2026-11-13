@@ -1,0 +1,171 @@
+name: uploader-app build
+# Reusable: builds the desktop app on Windows and macOS, runs the core, app and UI tests there,
+# the Windows installer-hook and launcher smoke, and the macOS universal-binary checks.
+# Read-only: no signing, no attestation, no release. Called by ci.yml (PRs) and uploader-app-release.yml (tags).
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version used in artifact names for a non-tag build. Empty uses 0.1.0-ci.N."
+        type: string
+        default: ""
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2022, platform: windows, bundles: nsis, target: x86_64-pc-windows-msvc }
+          - { os: macos-15, platform: macos, bundles: dmg, target: universal-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    defaults: { run: { shell: bash } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          targets: ${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: uploader -> target
+      - name: Core tests
+        working-directory: uploader
+        run: cargo test -p guild-uploader-core --locked
+      - name: App tests
+        working-directory: uploader
+        run: cargo test -p guild-uploader-app --locked
+      - name: UI tests
+        working-directory: uploader/app/ui
+        run: node --test
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2.0.0" --locked
+      - name: Generate platform icons from PNG
+        working-directory: uploader/app/src-tauri
+        run: cargo tauri icon icons/icon.png
+      - name: Build desktop app (unsigned)
+        working-directory: uploader/app/src-tauri
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+          ADDON_NAME: ${{ vars.ADDON_NAME }}
+          GUILD_NAME: ${{ vars.GUILD_NAME }}
+          GITHUB_REPO: ${{ github.repository }}
+          # Public key only. Builds without it cannot accept an update.
+          GUILD_UPLOADER_UPDATE_PUBKEY: ${{ vars.UPLOADER_UPDATE_PUBKEY }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && -z "${GUILD_UPLOADER_UPDATE_PUBKEY:-}" ]]; then
+            echo "Repository variable UPLOADER_UPDATE_PUBKEY is empty; a release build needs the update key." >&2
+            exit 1
+          fi
+          DEFAULT_SITE=""
+          if [ -f "$GITHUB_WORKSPACE/uploader/app/site.url" ]; then
+            DEFAULT_SITE="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/uploader/app/site.url")"
+          fi
+          # Repo variable wins when set. The file is the deployment default so a
+          # release build still has an address when the variable is empty.
+          export SITE_URL="${SITE_URL:-$DEFAULT_SITE}"
+          export ADDON_NAME="${ADDON_NAME:-}"
+          export GUILD_NAME="${GUILD_NAME:-}"
+          export GITHUB_REPO="${GITHUB_REPO:-$GITHUB_REPOSITORY}"
+          if [[ "${{ matrix.target }}" == "universal-apple-darwin" ]]; then
+            # tauri lipo-merges only the main binary for a universal build, but the bundler
+            # copies every Cargo [[bin]] into the .app. Build the extra binaries for both
+            # architectures and merge them where the bundler looks for them.
+            OUT="$GITHUB_WORKSPACE/uploader/target/universal-apple-darwin/release"
+            mkdir -p "$OUT"
+            for bin in updater; do
+              for arch in aarch64-apple-darwin x86_64-apple-darwin; do
+                cargo build --release --locked --bin "$bin" --target "$arch"
+              done
+              lipo -create -output "$OUT/$bin" \
+                "$GITHUB_WORKSPACE/uploader/target/aarch64-apple-darwin/release/$bin" \
+                "$GITHUB_WORKSPACE/uploader/target/x86_64-apple-darwin/release/$bin"
+              lipo -info "$OUT/$bin"
+            done
+          fi
+          cargo tauri build --bundles "${{ matrix.bundles }}" --target "${{ matrix.target }}"
+      - name: Windows installer hook and launcher smoke
+        if: matrix.os == 'windows-2022'
+        working-directory: uploader
+        run: |
+          set -euo pipefail
+          nsi=$(find target -name installer.nsi -path '*nsis*' | head -1)
+          echo "nsi=$nsi"
+          test -n "$nsi"
+          grep -F 'hooks.nsh' "$nsi"
+          installer=$(find target -path '*bundle*' -name '*.exe' ! -name '*uninstall*' | head -1)
+          echo "installer=$installer"
+          test -n "$installer"
+          # The packaged executable is named by tauri.conf.json mainBinaryName, not the Cargo bin.
+          main=$(node -p "require('./app/src-tauri/tauri.conf.json').mainBinaryName")
+          test -n "$main"
+          exe=$(find target -path "*/x86_64-pc-windows-msvc/release/$main.exe" -type f | head -1)
+          if [ -z "$exe" ]; then exe=$(find target -path "*/release/$main.exe" -type f | head -1); fi
+          echo "exe=$exe"
+          test -n "$exe"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$GITHUB_WORKSPACE/uploader/app/src-tauri/windows/launch-smoke.ps1" -Exe "$exe"
+      - name: macOS bundle check and app archive
+        if: matrix.platform == 'macos'
+        working-directory: uploader
+        run: |
+          set -euo pipefail
+          find target/universal-apple-darwin/release/bundle -maxdepth 2 || true
+          main=$(node -p "require('./app/src-tauri/tauri.conf.json').mainBinaryName")
+          dmg=$(find target -path '*/release/bundle/dmg/*.dmg' -type f -print -quit)
+          echo "dmg=$dmg"
+          test -n "$dmg"
+          hdiutil verify "$dmg"
+          mnt=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg" >/dev/null
+          trap 'hdiutil detach "$mnt" >/dev/null || true' EXIT
+          app=$(find "$mnt" -maxdepth 1 -name '*.app' -print -quit)
+          echo "app=$app"
+          test -n "$app"
+          for bin in "$main" updater; do
+            archs=$(lipo -archs "$app/Contents/MacOS/$bin")
+            echo "$bin: $archs"
+            [[ "$archs" == *x86_64* && "$archs" == *arm64* ]] || { echo "$bin is not universal" >&2; exit 1; }
+          done
+          # Plain archive of the .app from the disk image, for manual or scripted installs
+          # (tauri only makes one when its own updater signing is set up, which this app does not use).
+          name=$(basename "$app")
+          COPYFILE_DISABLE=1 tar -czf "$(dirname "$dmg")/$name.tar.gz" -C "$mnt" "$name"
+          ls -la "$(dirname "$dmg")"
+      - name: Collect artifacts
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          V="${GITHUB_REF_NAME#uploader-app-v}"
+          if [[ "${GITHUB_REF_TYPE:-}" != "tag" ]]; then V="${INPUT_VERSION:-0.1.0-ci.${GITHUB_RUN_NUMBER}}"; fi
+          # Workspace target dir is uploader/target (not app/src-tauri/target).
+          # Avoid mapfile (missing on macOS system bash 3).
+          ROOT=uploader/target
+          find "$ROOT" -type d -name bundle || true
+          n=0
+          while IFS= read -r -d '' f; do
+            base=$(basename "$f")
+            safe=$(echo "$base" | tr ' ' '_')
+            cp "$f" "dist/guild-uploader-app-$V-${{ matrix.platform }}-$safe"
+            n=$((n+1))
+          done < <(find "$ROOT" -path '*/release/bundle/*' -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.msi' \) ! -name '*unst*' -print0 2>/dev/null)
+          if [ "$n" -eq 0 ]; then
+            echo "No bundle artifacts found under $ROOT" >&2
+            find "$ROOT" -path '*/release/bundle/*' -type f | head -80 >&2 || true
+            exit 1
+          fi
+          cd dist
+          for f in *; do
+            [ -f "$f" ] || continue
+            case "$f" in *.sha256) continue ;; esac
+            if command -v sha256sum >/dev/null; then sha256sum "$f"; else shasum -a 256 "$f"; fi | sed 's/ \*/  /' > "$f.sha256"
+          done
+          ls -la
+      # Signing: SignPath later; unsigned for now (SPEC §18c).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error

@@ -1,0 +1,20 @@
+name: addon checks
+# Reusable: the addon's tests (Lua 5.1 + LuaJIT via lupa) and the packaging check.
+# Called by ci.yml on PRs and by addon-release.yml before a release build, so both run the same steps.
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  addon:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install pinned test tools
+        run: python -m pip install -q lupa==2.4 pillow==11.0.0
+      - name: Addon tests (Lua 5.1 and LuaJIT)
+        run: python tests/run.py
+      - name: Package check
+        run: sh tests/package-check.sh
